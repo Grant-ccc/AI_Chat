@@ -101,3 +101,26 @@ def test_security_validation_expiry_and_send_retry(database):
         db.commit()
     assert v.get('/api/visitor/conversation').status_code == 401
     assert v.post('/api/visitor/session').status_code == 401
+
+
+def test_concurrent_sends_and_read_only_visible_sequence(database):
+    v, cid = visitor()
+    first = payload('同一消息并发重试')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = list(pool.map(lambda _: v.post('/api/visitor/messages', json=first).status_code, range(2)))
+    assert codes == [200, 200]
+    v.post('/api/visitor/handoff')
+    m = merchant()
+    root = f'/api/merchant/conversations/{cid}'
+    visible = m.get(root).json()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        replies = list(pool.map(lambda data: v.post('/api/visitor/messages', json=data), [payload('补充A'), payload('补充B')]))
+    assert all(reply.status_code == 200 for reply in replies)
+    # A read acknowledgment made from the earlier render must not consume new messages.
+    m.post(root+'/read', json={'handoff_id': visible['handoff']['id'], 'sequence': visible['sequence']})
+    assert m.get('/api/merchant/conversations').json()['pending'][0]['unread']
+    latest = m.get(root).json()
+    assert [message['sequence'] for message in latest['messages']] == [1, 2, 3, 4]
+    assert len({message['id'] for message in latest['messages']}) == 4
+    m.post(root+'/read', json={'handoff_id': latest['handoff']['id'], 'sequence': latest['sequence']})
+    assert not m.get('/api/merchant/conversations').json()['pending'][0]['unread']
