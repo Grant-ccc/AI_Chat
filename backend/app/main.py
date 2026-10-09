@@ -2,9 +2,11 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from .auth import router as auth_router
+from .conversations import router as conversation_router
 
 app = FastAPI(title='花窗伞人工接待', version='0.1.0')
 app.include_router(auth_router)
+app.include_router(conversation_router)
 
 
 @app.middleware('http')

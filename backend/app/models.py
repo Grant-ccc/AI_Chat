@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 import uuid
-from sqlalchemy import String, Text, DateTime, Integer, ForeignKey, UniqueConstraint
+from sqlalchemy import String, Text, DateTime, Integer, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -46,6 +46,7 @@ class Handoff(Base):
     reason: Mapped[str] = mapped_column(String(200))
     covered_sequence: Mapped[int] = mapped_column(Integer)
     read_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    viewed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     taken_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

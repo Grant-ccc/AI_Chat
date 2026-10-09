@@ -1,7 +1,16 @@
-"""初始化空数据库的表；不创建数据库本身，不修改已有表结构。"""
+"""创建应用表并执行保留已有数据的增量结构升级。"""
+from sqlalchemy import inspect, text
 from .db import Base, engine
 from . import models  # 注册表
 
+def ensure_schema(target):
+    Base.metadata.create_all(target)
+    columns = {column['name'] for column in inspect(target).get_columns('handoffs')}
+    if 'viewed' not in columns:
+        with target.begin() as connection:
+            connection.execute(text('ALTER TABLE handoffs ADD COLUMN viewed BOOLEAN NOT NULL DEFAULT FALSE'))
+
+
 if __name__ == '__main__':
-    Base.metadata.create_all(engine)
+    ensure_schema(engine)
     print('数据库表初始化完成。')

@@ -11,6 +11,7 @@ from app.db import Base, engine, get_db
 from app.main import app
 from app.security import password_hash, attempts
 from app.models import Merchant
+from app.init_db import ensure_schema
 
 
 @pytest.fixture
@@ -19,7 +20,7 @@ def database():
     if not name.endswith('_test') or name == engine.url.database:
         raise RuntimeError('只能使用独立且以_test结尾的MySQL测试库。')
     test_engine = create_engine(engine.url.set(database=name), pool_pre_ping=True, hide_parameters=True)
-    Base.metadata.create_all(test_engine)
+    ensure_schema(test_engine)
     with test_engine.begin() as conn:
         for table in reversed(Base.metadata.sorted_tables):
             conn.execute(table.delete())
