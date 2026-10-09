@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 from sqlalchemy import String, Text, DateTime, Integer, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
@@ -6,7 +6,7 @@ from .db import Base
 
 
 def now():
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def uid():
