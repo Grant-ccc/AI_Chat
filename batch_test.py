@@ -21,23 +21,24 @@ QUESTIONS = {
 }
 
 
-def run_batch(models, questions, label='batch', histories=None):
+def run_batch(models, questions, label='batch', histories=None, repetitions=1):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', action='store_true')
     args = parser.parse_args()
     histories = histories or {}
     items = []
-    for model in models:
-        for test_id, question in questions.items():
-            payload = make_payload(model, question)
-            payload['messages'][1:1] = histories.get(test_id, [])
-            items.append((test_id, model, payload))
+    for sample in range(1, repetitions + 1):
+        for model in models:
+            for test_id, question in questions.items():
+                payload = make_payload(model, question)
+                payload['messages'][1:1] = histories.get(test_id, [])
+                items.append((test_id, model, payload, sample))
     count = len(items)
     if not args.run:
-        for test_id, model, payload in items:
+        for test_id, model, payload, sample in items:
             assert payload['messages'][-1]['content'] == questions[test_id]
             assert 'M01' not in payload['messages'][0]['content']
-            print(test_id, model, json.dumps(payload['messages'][1:], ensure_ascii=False))
+            print(test_id, model, f'第{sample}次', json.dumps(payload['messages'][1:], ensure_ascii=False))
         print(f'本地检查通过；{PROMPT_VERSION} 实际运行将调用{count}次。')
         return
     key = os.getenv('SDU_API_KEY')
@@ -47,14 +48,14 @@ def run_batch(models, questions, label='batch', histories=None):
     folder = ROOT / 'results' / (label + '-' + PROMPT_VERSION + '-' + stamp)
     folder.mkdir(parents=True)
     records = []
-    for test_id, model, payload in items:
-        print(f'正在调用 {test_id} {model} ...', flush=True)
+    for test_id, model, payload, sample in items:
+        print(f'正在调用 {test_id} {model} 第{sample}次 ...', flush=True)
         req = urllib.request.Request(
             'https://xplt.sdu.edu.cn:4000/v1/chat/completions',
             data=json.dumps(payload).encode('utf-8'),
             headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
         record = {'test_id': test_id, 'timestamp_utc': datetime.now(timezone.utc).isoformat(),
-                  'prompt_version': PROMPT_VERSION, 'request': payload}
+                  'prompt_version': PROMPT_VERSION, 'sample_index': sample, 'request': payload}
         started = time.perf_counter()
         try:
             with urllib.request.urlopen(req, timeout=90) as response:
