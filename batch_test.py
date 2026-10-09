@@ -1,5 +1,6 @@
 """v2 六题 × 三个模型复测；默认不联网，--run 才实际调用。"""
 import argparse
+import http.client
 from datetime import datetime, timezone
 import json
 import os
@@ -95,6 +96,8 @@ def run_batch(models, questions, label='batch', histories=None, repetitions=1):
             record['error'] = f'HTTP {exc.code}；检查模型、密钥或参数。'
         except (urllib.error.URLError, TimeoutError):
             record['error'] = '连接失败或超时；检查校园网/VPN。'
+        except (http.client.HTTPException, ConnectionError):
+            record['error'] = '服务端断开连接或返回不完整响应；本次是否扣额度未知。'
         except ValueError:
             record['error'] = '响应不是有效JSON。'
         record['elapsed_seconds'] = round(time.perf_counter() - started, 3)
