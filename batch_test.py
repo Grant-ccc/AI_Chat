@@ -3,6 +3,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 import time
 import urllib.error
 import urllib.request
@@ -24,6 +25,7 @@ QUESTIONS = {
 def run_batch(models, questions, label='batch', histories=None, repetitions=1):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', action='store_true')
+    parser.add_argument('--resume', type=Path, help='读取本批旧results.json，仅跳过已有文本回复的调用')
     args = parser.parse_args()
     histories = histories or {}
     items = []
@@ -34,12 +36,40 @@ def run_batch(models, questions, label='batch', histories=None, repetitions=1):
                 payload['messages'][1:1] = histories.get(test_id, [])
                 items.append((test_id, model, payload, sample))
     count = len(items)
+    completed = []
+    if args.resume:
+        source = args.resume.resolve()
+        if not source.is_relative_to((ROOT / 'results').resolve()):
+            parser.error('续测文件必须位于本项目results目录。')
+        try:
+            previous = json.loads(source.read_text(encoding='utf-8'))
+            if not isinstance(previous, list):
+                raise ValueError('记录必须为列表')
+            planned = {(i, m, s): p for i, m, p, s in items}
+            seen = set()
+            for record in previous:
+                identity = (record['test_id'], record['request']['model'], record.get('sample_index', 1))
+                if identity in seen or record['prompt_version'] != PROMPT_VERSION or planned.get(identity) != record['request']:
+                    raise ValueError('旧记录与当前题目、提示或参数不一致，或有重复记录')
+                seen.add(identity)
+                choices = record.get('response', {}).get('choices')
+                reply = choices[0].get('message', {}).get('content') if isinstance(choices, list) and choices else None
+                if 'error' not in record and isinstance(reply, str) and reply.strip():
+                    completed.append(dict(record, resume_source=str(source)))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            parser.error(f'无法安全续测：{exc}')
+        done = {(r['test_id'], r['request']['model'], r.get('sample_index', 1)) for r in completed}
+        items = [item for item in items if (item[0], item[1], item[3]) not in done]
+        print(f'保留已完成{len(completed)}次，仅补测{len(items)}次。')
     if not args.run:
         for test_id, model, payload, sample in items:
             assert payload['messages'][-1]['content'] == questions[test_id]
             assert 'M01' not in payload['messages'][0]['content']
             print(test_id, model, f'第{sample}次', json.dumps(payload['messages'][1:], ensure_ascii=False))
-        print(f'本地检查通过；{PROMPT_VERSION} 实际运行将调用{count}次。')
+        print(f'本地检查通过；{PROMPT_VERSION} 实际运行将调用{len(items)}次，本批总计{count}次。')
+        return
+    if not items:
+        print('全部已有文本结果，无需再次调用。')
         return
     key = os.getenv('SDU_API_KEY')
     if not key:
@@ -47,7 +77,7 @@ def run_batch(models, questions, label='batch', histories=None, repetitions=1):
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     folder = ROOT / 'results' / (label + '-' + PROMPT_VERSION + '-' + stamp)
     folder.mkdir(parents=True)
-    records = []
+    records = completed.copy()
     for test_id, model, payload, sample in items:
         print(f'正在调用 {test_id} {model} 第{sample}次 ...', flush=True)
         req = urllib.request.Request(
