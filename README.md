@@ -40,6 +40,38 @@
 
 9 项真实 MySQL 集成测试通过；Edge 浏览器闭环通过，包括新咨询保留用户主动转人工的选择、响应丢失重试、断网保留输入、历史阅读时的新消息与未读标记、访客隔离、退出登录及手机布局。前端生产构建通过。验收范围见 [阶段说明](./docs/一阶段_人工接待闭环说明.md#6-测试与验收)。这些结果不等同于模型正确率或真实用户试用效果。
 
+## 本地检索对照（尚未接入聊天）
+
+已新增数据驱动的 BM25 字面检索与本地中文语义检索工具。仅查找公开依据，不生成回答，不创建人工事项，不访问订单或聊天数据库。商品组合独立保存，内部规则和测试答案不进入索引。更换符合相同格式的知识文件可使用 `--knowledge`，核心检索算法不含花窗伞专用词典。
+
+```powershell
+# 可选依赖，人工接待服务不需要安装。语义检索首次运行需联网下载公开模型。
+.venv\Scripts\python.exe -m pip install -r backend/requirements-retrieval.txt
+# 业务 Markdown 是事实来源；修改知识后重新导出，并检查是否一致。
+.venv\Scripts\python.exe -X utf8 scripts/export_public_knowledge.py
+.venv\Scripts\python.exe -X utf8 scripts/export_public_knowledge.py --check
+# 同一道问题对照两个方法；也可选择 --method keyword，无需向量模型。
+.venv\Scripts\python.exe -X utf8 scripts/retrieval_probe.py --query "防晒伞下雨能用吗？"
+# 多轮已知信息由调用者提供；此工具尚未实现真实会话上下文管理。
+.venv\Scripts\python.exe -X utf8 scripts/retrieval_probe.py --query "不会收，有教程吗？" --context "我买的是自动款"
+# 开发题验证，默认前3条候选。模型已缓存后可添加 --local-only，避免下载。
+.venv\Scripts\python.exe -X utf8 scripts/retrieval_probe.py --evaluate --local-only
+```
+
+模型为 `BAAI/bge-small-zh-v1.5`，FastEmbed 0.7.4 / ONNX 在本机 CPU 运行，无付费 API 调用；模型缓存和逐题结果位于被 Git 忽略的 `.local/embedding-models` 与 `.local/retrieval`。首次下载约90 MB，详情见 [FastEmbed 官方模型清单](https://qdrant.github.io/fastembed/examples/Supported_Models/)。`--model` 可以更换 FastEmbed 支持的模型，不表示所有模型都适合中文。
+
+2026-10-09 首轮对照使用同一份28条公开条目、18道构造开发题和5道新增无关题，未使用T21—T30保留题，也未扩充专用同义词或调整匹配阈值。评测问题保留原开发题输入栏中的已知上下文说明；这些不是实际用户输入样本。
+
+| 前3条候选的检查项 | BM25 字面检索 | 中文语义检索 |
+|---|---|---|
+| 找全全部预期依据 | 11/18题 | 12/18题 |
+| 每题预期依据召回比例的平均值 | 70.37% | 75.93% |
+| 5道无关题中返回了候选的题数 | 0/5 | 5/5 |
+
+以上不是回答正确率；预期编号用于核对，不代表唯一可用资料。该轮语义模型改善了雨天使用和材质题，但图案防水、收伞和故障原因题仍有漏检，不能推导语义检索普遍优于字面检索。语义检索按相似度总会返回候选，当前 `sufficiency=unvalidated`，未校准资料充分性阈值，分数不等于可信度，两种分数也不能直接比较。默认日期仅作为报告元数据，尚未实现日期推理。
+
+7项独立测试通过：源文档与公开导出一致、拒绝非公开条目、替换饮品知识后算法照常运行、无关字面查询不强行返回、缺失报告本身可检索、开发题范围及多轮输入、指标计算。测试不需要数据库或模型下载；临时目录需位于可写位置。下一步检查漏检原因，讨论混合检索与资料不足的判断，再决定是否接入客服回答。
+
 ## 项目文档
 
 | 文档 | 内容 |
