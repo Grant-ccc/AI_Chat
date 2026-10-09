@@ -7,9 +7,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'backend'))
 sys.path.insert(0, str(ROOT / 'scripts'))
-from app.retrieval import KeywordRetriever, load_documents
+from app.retrieval import HybridRetriever, KeywordRetriever, fuse_rankings, load_documents
 from export_public_knowledge import export
-from retrieval_probe import build_cases, summarize
+from retrieval_probe import analyze_semantic_scores, build_cases, build_gap_cases, summarize
 
 
 def test_public_export_matches_source_and_excludes_internal_rules():
@@ -75,3 +75,59 @@ def test_metrics_count_all_required_evidence_and_negative_candidates():
     assert summary['all_expected_found'] == 0
     assert summary['negatives_with_candidates'] == 1
     assert summary['mean_query_ms'] == 2
+
+
+def test_fusion_deduplicates_and_uses_rank_not_incompatible_raw_scores():
+    keyword = dict(score_type='bm25', hits=[dict(id='A', score=999), dict(id='B', score=1)])
+    semantic = dict(score_type='cosine', hits=[dict(id='B', score=0.99), dict(id='C', score=0.98)])
+    result = fuse_rankings(keyword, semantic)
+    assert [hit['id'] for hit in result['hits']] == ['B', 'A', 'C']
+    assert result['hits'][0]['components']['keyword']['rank'] == 2
+    assert result['sufficiency'] == 'unvalidated'
+    keyword['hits'][0]['score'] = 0.01
+    assert [hit['id'] for hit in fuse_rankings(keyword, semantic)['hits']] == ['B', 'A', 'C']
+
+
+def test_fusion_handles_one_empty_route_without_inventing_candidates():
+    empty = dict(score_type='bm25', hits=[])
+    semantic = dict(score_type='cosine', hits=[dict(id='A', score=0.01)])
+    assert fuse_rankings(empty, semantic)['hits'][0]['id'] == 'A'
+    assert fuse_rankings(empty, empty)['hits'] == []
+    with pytest.raises(ValueError, match='重复'):
+        fuse_rankings(empty, dict(score_type='cosine', hits=semantic['hits'] * 2))
+
+
+def test_hybrid_can_recover_evidence_from_both_routes():
+    class Route:
+        def __init__(self, hits, score_type):
+            self.hits = hits
+            self.score_type = score_type
+        def search(self, query, top_k):
+            assert query == '两个问题'
+            return dict(hits=self.hits[:top_k], score_type=self.score_type)
+    retriever = HybridRetriever(Route([dict(id='A', facts='依据一', score=10)], 'bm25'),
+                                Route([dict(id='B', facts='依据二', score=0.7)], 'cosine'))
+    result = retriever.search('两个问题', 2)
+    assert {hit['facts'] for hit in result['hits']} == {'依据一', '依据二'}
+    with pytest.raises(ValueError, match='rank_window'):
+        retriever.search('两个问题', 11)
+
+
+def test_threshold_diagnostic_counts_rejected_relevant_and_kept_unrelated():
+    rows = [dict(id='T01', expected=['K02'], score_type='cosine', hits=[dict(id='K01', score=0.42)]),
+            dict(id='N01', expected=[], score_type='cosine', hits=[dict(id='K02', score=0.43)])]
+    result = analyze_semantic_scores(rows)
+    threshold = next(row for row in result['threshold_sweep'] if row['threshold'] == 0.45)
+    assert threshold['relevant_questions_blocked'] == ['T01']
+    assert threshold['unrelated_questions_kept'] == []
+    assert result['status'] == 'diagnostic_only'
+    with pytest.raises(ValueError, match='余弦'):
+        analyze_semantic_scores([dict(score_type='rrf')])
+
+
+def test_gap_diagnostics_are_separate_from_main_recall_evaluation():
+    main_ids = {case['id'] for case in build_cases()}
+    gaps = build_gap_cases()
+    assert len(gaps) == 6
+    assert not main_ids & {case['id'] for case in gaps}
+    assert all(case['limitation'] for case in gaps)

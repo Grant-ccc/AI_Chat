@@ -87,6 +87,52 @@ class SemanticRetriever:
         return ranked(self.documents, scores, top_k, 'cosine', started)
 
 
+def fuse_rankings(keyword, semantic, top_k=3, rank_constant=60):
+    """按名次融合；不把 BM25 与余弦分数相加，也不判断资料充分性。"""
+    if top_k < 1 or rank_constant < 1:
+        raise ValueError('top_k 和 rank_constant 必须大于零')
+    candidates = {}
+    for method, result in [('keyword', keyword), ('semantic', semantic)]:
+        seen = set()
+        for rank, hit in enumerate(result['hits'], 1):
+            if hit['id'] in seen:
+                raise ValueError('单路检索结果存在重复编号')
+            seen.add(hit['id'])
+            item = candidates.setdefault(hit['id'], dict(
+                document={k: v for k, v in hit.items() if k != 'score'},
+                score=0.0, components={}))
+            item['score'] += 1 / (rank_constant + rank)
+            item['components'][method] = dict(rank=rank, score=hit['score'],
+                                               score_type=result['score_type'])
+    ordered = sorted(candidates.items(), key=lambda pair: (-pair[1]['score'], pair[0]))
+    return dict(hits=[item['document'] | dict(score=round(item['score'], 6),
+                 components=item['components']) for _, item in ordered[:top_k]],
+                score_type='rrf', rank_constant=rank_constant,
+                sufficiency='unvalidated',
+                warning='融合分数仅用于排序，不能作为回答可信度或资料充分性的阈值。')
+
+
+class HybridRetriever:
+    def __init__(self, keyword, semantic, rank_window=10, rank_constant=60):
+        if rank_window < 1 or rank_constant < 1:
+            raise ValueError('rank_window 和 rank_constant 必须大于零')
+        self.keyword = keyword
+        self.semantic = semantic
+        self.rank_window = rank_window
+        self.rank_constant = rank_constant
+
+    def search(self, query, top_k=3):
+        if top_k < 1 or top_k > self.rank_window:
+            raise ValueError('top_k 必须在1和rank_window之间')
+        started = perf_counter()
+        keyword = self.keyword.search(query, self.rank_window)
+        semantic = self.semantic.search(query, self.rank_window)
+        result = fuse_rankings(keyword, semantic, top_k, self.rank_constant)
+        result['rank_window'] = self.rank_window
+        result['elapsed_ms'] = round((perf_counter()-started)*1000, 3)
+        return result
+
+
 def ranked(documents, scores, top_k, score_type, started, positive_only=False):
     if top_k < 1:
         raise ValueError('top_k 必须大于零')
