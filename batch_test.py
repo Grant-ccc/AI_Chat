@@ -1,4 +1,4 @@
-"""首轮剩余五题 × 三个模型；默认不联网，--run 才实际调用。"""
+"""v2 六题 × 三个模型复测；默认不联网，--run 才实际调用。"""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -7,12 +7,13 @@ import time
 import urllib.error
 import urllib.request
 
-from test_model import ROOT, make_payload
+from test_model import ROOT, PROMPT_VERSION, make_payload
 
 MODELS = ['SDU-AI/DeepSeek-V4-Flash', 'Ali-dashscope/Qwen3.5-Flash',
           'Ali-dashscope/Qwen3.5-Plus']
 QUESTIONS = {
     'T01': '防晒伞下雨能用吗？',
+    'T04': '有 UPF50+ 的报告吗？',
     'T07': '我要双面花窗在外面的那款。',
     'T10': '伞怎么收回去？',
     'T15': '二团售后多久，从签收开始算吗？',
@@ -31,13 +32,13 @@ def main():
                 assert payload['messages'][-1]['content'] == question
                 assert 'M01' not in payload['messages'][0]['content']
                 print(test_id, model, question)
-        print('本地检查通过；实际运行将调用15次，不重复T04。')
+        print('本地检查通过；probe-v2 实际运行将调用18次，包含重新测试T04。')
         return
     key = os.getenv('SDU_API_KEY')
     if not key:
         parser.exit(1, '未设置 SDU_API_KEY；请在原终端本地配置。\n')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-    folder = ROOT / 'results' / ('batch-' + stamp)
+    folder = ROOT / 'results' / ('batch-' + PROMPT_VERSION + '-' + stamp)
     folder.mkdir(parents=True)
     records = []
     for model in MODELS:
@@ -49,7 +50,7 @@ def main():
                 data=json.dumps(payload).encode('utf-8'),
                 headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
             record = {'test_id': test_id, 'timestamp_utc': datetime.now(timezone.utc).isoformat(),
-                      'prompt_version': 'probe-v1', 'request': payload}
+                      'prompt_version': PROMPT_VERSION, 'request': payload}
             started = time.perf_counter()
             try:
                 with urllib.request.urlopen(req, timeout=90) as response:
@@ -75,7 +76,7 @@ def main():
                                   'elapsed_seconds': record['elapsed_seconds']}, ensure_ascii=False), flush=True)
             except (KeyError, IndexError, TypeError, AttributeError, ValueError):
                 parser.exit(1, f'返回结构异常或回复为空，停止调用并保留原始记录：{folder}\n')
-    print(f'15次调用完成。结果：{folder / "results.json"}；待人工复核，不自动评分。')
+    print(f'18次调用完成。结果：{folder / "results.json"}；待人工复核，不自动评分。')
 
 
 if __name__ == '__main__':
