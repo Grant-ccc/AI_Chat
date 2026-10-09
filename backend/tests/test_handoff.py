@@ -4,7 +4,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, func
 from app.main import app
 from app import config
-from app.models import Handoff, VisitorSession, now
+from app.models import Conversation, Handoff, VisitorSession, now
+from app.conversations import add_message
+from app.reopen_legacy import reopen_legacy
 from datetime import timedelta
 
 
@@ -61,8 +63,9 @@ def test_full_loop_and_private_data(database):
     assert len(m.get('/api/merchant/conversations').json()['ended']) == 1
     assert m.post(root+'/messages', json=payload('已结束')).status_code == 409
     v.post('/api/visitor/messages', json=payload('新问题'))
-    assert v.get('/api/visitor/conversation').json()['status'] == 'ai_ready'
-    assert len(m.get('/api/merchant/conversations').json()['ended']) == 1
+    assert v.get('/api/visitor/conversation').json()['status'] == 'waiting_human'
+    assert len(m.get('/api/merchant/conversations').json()['ended']) == 0
+    assert len(m.get('/api/merchant/conversations').json()['pending']) == 1
     v.post('/api/visitor/handoff')
     new = m.get(root).json()['handoff']
     assert new['round'] == 2 and new['id'] != h
@@ -70,6 +73,7 @@ def test_full_loop_and_private_data(database):
     assert len(m.get('/api/merchant/conversations').json()['pending']) == 1
     with database() as db:
         assert db.scalar(select(func.count()).select_from(Handoff)) == 2
+        assert db.get(Handoff, h).ended_at is not None
 
 
 def test_no_history_and_concurrent_duplicate_handoff(database):
@@ -124,3 +128,55 @@ def test_concurrent_sends_and_read_only_visible_sequence(database):
     assert len({message['id'] for message in latest['messages']}) == 4
     m.post(root+'/read', json={'handoff_id': latest['handoff']['id'], 'sequence': latest['sequence']})
     assert not m.get('/api/merchant/conversations').json()['pending'][0]['unread']
+
+
+def test_reopen_after_end_deduplicates_concurrent_messages(database):
+    v, cid = visitor()
+    old_message = payload('第一轮问题')
+    v.post('/api/visitor/messages', json=old_message)
+    v.post('/api/visitor/handoff')
+    m = merchant()
+    root = f'/api/merchant/conversations/{cid}'
+    old_handoff = m.get(root).json()['handoff']['id']
+    m.post(root+'/takeover', json={'handoff_id': old_handoff})
+    m.post(root+'/end', json={'handoff_id': old_handoff})
+    # A retry of a message from the ended round is not a new consultation.
+    v.post('/api/visitor/messages', json=old_message)
+    assert v.get('/api/visitor/conversation').json()['status'] == 'ended'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = list(pool.map(lambda data: v.post('/api/visitor/messages', json=data).status_code,
+                              [payload('新的问题A'), payload('新的问题B')]))
+    assert codes == [200, 200]
+    detail = m.get(root).json()
+    assert detail['status'] == 'waiting_human' and detail['handoff']['round'] == 2
+    assert m.post(root+'/messages', json=payload('还没接手')).status_code == 409
+    assert m.post(root+'/takeover', json={'handoff_id': old_handoff}).status_code == 409
+    with database() as db:
+        assert db.scalar(select(func.count()).select_from(Handoff)) == 2
+        assert db.get(Handoff, old_handoff).ended_at is not None
+
+
+def test_legacy_reopen_is_idempotent_and_preserves_history(database):
+    v, cid = visitor()
+    blank, blank_id = visitor()
+    v.post('/api/visitor/handoff')
+    m = merchant()
+    root = f'/api/merchant/conversations/{cid}'
+    old_handoff = m.get(root).json()['handoff']['id']
+    m.post(root+'/takeover', json={'handoff_id': old_handoff})
+    m.post(root+'/end', json={'handoff_id': old_handoff})
+    with database() as db:
+        c = db.get(Conversation, cid)
+        c.status = 'ai_ready'
+        add_message(db, c, 'user', '旧版本结束后补充的问题')
+        db.commit()
+    with database() as db:
+        assert reopen_legacy(db) == 1
+        db.commit()
+    with database() as db:
+        assert reopen_legacy(db) == 0
+        assert db.get(Conversation, blank_id).status == 'ai_ready'
+        assert db.get(Handoff, old_handoff).ended_at is not None
+    detail = m.get(root).json()
+    assert detail['status'] == 'waiting_human' and detail['handoff']['round'] == 2
+    assert any(message['content'] == '旧版本结束后补充的问题' for message in detail['messages'])

@@ -62,6 +62,13 @@ def add_message(db, c, role, content, client_id=None):
     return message
 
 
+def open_handoff(db, c, previous, reason, event):
+    db.add(Handoff(conversation_id=c.id, round=(previous.round + 1) if previous else 1,
+                   reason=reason, covered_sequence=c.sequence, read_sequence=0))
+    c.status = 'waiting_human'
+    add_message(db, c, 'system', event)
+
+
 def message_data(m):
     return {'id': m.id, 'sequence': m.sequence, 'role': m.role, 'content': m.content,
             'created_at': m.created_at.isoformat() + 'Z'}
@@ -104,9 +111,11 @@ def send_message(db, c, data, role):
         raise HTTPException(409, '当前会话未接手或已结束，不能回复。')
     if c.sequence >= 2000:
         raise HTTPException(409, '演示会话已达到消息上限，请联系项目负责人。')
-    if role == 'user' and c.status == 'ended':
-        c.status = 'ai_ready'
+    previous = latest_handoff(db, c, lock=True) if role == 'user' and c.status in ('ended', 'ai_ready') else None
     add_message(db, c, role, data.content, client_id)
+    if previous and previous.ended_at:
+        open_handoff(db, c, previous, '上一轮结束后用户继续咨询',
+                     '已开始新一轮咨询，正在等待人工接待，可以继续补充文字。')
 
 
 @router.post('/visitor/messages')
@@ -122,11 +131,7 @@ def handoff(request: Request, db: Session = Depends(get_db)):
     c = public_conversation(request, db, lock=True)
     previous = latest_handoff(db, c, lock=True)
     if c.status not in ('waiting_human', 'human_active'):
-        h = Handoff(conversation_id=c.id, round=(previous.round + 1) if previous else 1,
-                    reason='用户主动请求人工', covered_sequence=c.sequence, read_sequence=0)
-        db.add(h)
-        c.status = 'waiting_human'
-        add_message(db, c, 'system', '已申请人工接待，可以在这里继续补充文字。')
+        open_handoff(db, c, previous, '用户主动请求人工', '已申请人工接待，可以在这里继续补充文字。')
     db.commit()
     return snapshot(db, c)
 
