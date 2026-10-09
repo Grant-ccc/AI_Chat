@@ -37,6 +37,8 @@
 
 ## 接入条件与后续步骤
 
+新增 [开发集扩展测试说明](./开发集扩展测试说明.md)：`extended_test.py` 对剩余13题比较 DeepSeek 与 Qwen Flash，共26次调用，包含固定多轮上下文，不包含T19或保留题。默认不联网，实际运行使用 `python -X utf8 extended_test.py --run`；目前已完成本地检查，实际结果待运行后复核。
+
 学校 API 需要校园网或学校 VPN，不能假设外部云服务器可以直接访问。API Key 只在本地配置，不写入代码、文档或仓库。已有 Python 标准库脚本 `test_model.py`（T04 单题）和 `batch_test.py`（六题、三个模型，probe-v2）；默认不联网，添加 `--run` 才实际调用，使用本地环境变量 `SDU_API_KEY`。原始输出保存在被 Git 忽略的 `results/`。
 
 1. 核对模型 ID，准备本地网络与凭据，验证一次调用。
