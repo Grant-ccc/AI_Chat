@@ -12,12 +12,12 @@ ROOT = Path(__file__).resolve().parent
 MODEL = 'SDU-AI/DeepSeek-V4-Flash'
 
 
-def make_payload():
+def make_payload(model=MODEL):
     text = (ROOT / '花窗伞MVP_知识库与回答规则_v0.1.md').read_text(encoding='utf-8-sig')
     public = text.split('## 一、来源与采用顺序', 1)[1].split('## 四、仅商家可见知识', 1)[0]
     rules = text.split('## 五、回答与交接规则', 1)[1].split('## 六、内部摘要模板', 1)[0]
     return {
-        'model': MODEL,
+        'model': model,
         'messages': [
             {'role': 'system', 'content':
              '你是花窗伞客服，业务为二团历史模拟。仅依据以下公开资料和规则回答。'
@@ -33,10 +33,11 @@ def make_payload():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', action='store_true', help='实际调用一次，会消耗学校额度')
+    parser.add_argument('--model', default=MODEL, help='学校模型页复制的准确模型 ID')
     args = parser.parse_args()
-    payload = make_payload()
+    payload = make_payload(args.model)
     if not args.run:
-        print('本地检查通过：T04，模型 ' + MODEL + '；未发起网络请求。')
+        print('本地检查通过：T04，模型 ' + args.model + '；未发起网络请求。')
         return
     key = os.getenv('SDU_API_KEY')
     if not key:
