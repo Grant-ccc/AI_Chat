@@ -5,8 +5,8 @@ from sqlalchemy import select, func
 from app.main import app
 from app import config
 from app.models import Conversation, Handoff, VisitorSession, now
-from app.conversations import add_message
-from app.reopen_legacy import reopen_legacy
+from app.conversations import add_message, open_handoff, latest_handoff
+from app.restore_manual_choice import restore_manual_choice
 from datetime import timedelta
 
 
@@ -63,9 +63,9 @@ def test_full_loop_and_private_data(database):
     assert len(m.get('/api/merchant/conversations').json()['ended']) == 1
     assert m.post(root+'/messages', json=payload('已结束')).status_code == 409
     v.post('/api/visitor/messages', json=payload('新问题'))
-    assert v.get('/api/visitor/conversation').json()['status'] == 'waiting_human'
-    assert len(m.get('/api/merchant/conversations').json()['ended']) == 0
-    assert len(m.get('/api/merchant/conversations').json()['pending']) == 1
+    assert v.get('/api/visitor/conversation').json()['status'] == 'ai_ready'
+    assert len(m.get('/api/merchant/conversations').json()['ended']) == 1
+    assert len(m.get('/api/merchant/conversations').json()['pending']) == 0
     v.post('/api/visitor/handoff')
     new = m.get(root).json()['handoff']
     assert new['round'] == 2 and new['id'] != h
@@ -130,7 +130,7 @@ def test_concurrent_sends_and_read_only_visible_sequence(database):
     assert not m.get('/api/merchant/conversations').json()['pending'][0]['unread']
 
 
-def test_reopen_after_end_deduplicates_concurrent_messages(database):
+def test_new_consultation_requires_explicit_handoff(database):
     v, cid = visitor()
     old_message = payload('第一轮问题')
     v.post('/api/visitor/messages', json=old_message)
@@ -148,17 +148,24 @@ def test_reopen_after_end_deduplicates_concurrent_messages(database):
                               [payload('新的问题A'), payload('新的问题B')]))
     assert codes == [200, 200]
     detail = m.get(root).json()
-    assert detail['status'] == 'waiting_human' and detail['handoff']['round'] == 2
+    assert detail['status'] == 'ai_ready' and detail['handoff']['round'] == 1
     assert m.post(root+'/messages', json=payload('还没接手')).status_code == 409
     assert m.post(root+'/takeover', json={'handoff_id': old_handoff}).status_code == 409
+    assert m.get('/api/merchant/conversations').json()['pending'] == []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = list(pool.map(lambda _: v.post('/api/visitor/handoff').status_code, range(2)))
+    assert codes == [200, 200]
+    assert m.get(root).json()['handoff']['round'] == 2
+    assert len(m.get('/api/merchant/conversations').json()['pending']) == 1
     with database() as db:
         assert db.scalar(select(func.count()).select_from(Handoff)) == 2
         assert db.get(Handoff, old_handoff).ended_at is not None
 
 
-def test_legacy_reopen_is_idempotent_and_preserves_history(database):
+def test_restore_only_unclaimed_automatic_handoffs(database):
     v, cid = visitor()
-    blank, blank_id = visitor()
+    explicit, explicit_id = visitor()
+    explicit.post('/api/visitor/handoff')
     v.post('/api/visitor/handoff')
     m = merchant()
     root = f'/api/merchant/conversations/{cid}'
@@ -167,16 +174,29 @@ def test_legacy_reopen_is_idempotent_and_preserves_history(database):
     m.post(root+'/end', json={'handoff_id': old_handoff})
     with database() as db:
         c = db.get(Conversation, cid)
-        c.status = 'ai_ready'
         add_message(db, c, 'user', '旧版本结束后补充的问题')
+        open_handoff(db, c, latest_handoff(db, c), '上一轮结束后用户继续咨询', '旧版本自动交接')
+        db.commit()
+    automatic_id = m.get(root).json()['handoff']['id']
+    active, active_id = visitor()
+    with database() as db:
+        c = db.get(Conversation, active_id)
+        open_handoff(db, c, None, '上一轮结束后用户继续咨询', '旧版本自动交接')
+        db.commit()
+    active_root = f'/api/merchant/conversations/{active_id}'
+    active_h = m.get(active_root).json()['handoff']['id']
+    m.post(active_root+'/takeover', json={'handoff_id': active_h})
+    with database() as db:
+        assert restore_manual_choice(db) == 1
         db.commit()
     with database() as db:
-        assert reopen_legacy(db) == 1
-        db.commit()
-    with database() as db:
-        assert reopen_legacy(db) == 0
-        assert db.get(Conversation, blank_id).status == 'ai_ready'
+        assert restore_manual_choice(db) == 0
+        assert db.get(Conversation, explicit_id).status == 'waiting_human'
+        assert db.get(Conversation, active_id).status == 'human_active'
+        assert db.get(Handoff, automatic_id).ended_at is not None
         assert db.get(Handoff, old_handoff).ended_at is not None
     detail = m.get(root).json()
-    assert detail['status'] == 'waiting_human' and detail['handoff']['round'] == 2
+    assert detail['status'] == 'ai_ready'
     assert any(message['content'] == '旧版本结束后补充的问题' for message in detail['messages'])
+    v.post('/api/visitor/handoff')
+    assert m.get(root).json()['status'] == 'waiting_human'

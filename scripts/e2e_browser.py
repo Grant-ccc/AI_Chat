@@ -11,7 +11,7 @@ sys.path.insert(0, str(root / 'backend'))
 from app.db import engine
 from app.models import VisitorSession
 
-base = 'http://localhost:5173'
+base = 'http://localhost:5174'
 label = '浏览器验收-' + uuid.uuid4().hex[:8]
 out = root / '.local'
 out.mkdir(exist_ok=True)
@@ -95,9 +95,12 @@ with sync_playwright() as p:
         staff.get_by_role('button', name='已结束', exact=False).click()
         expect(staff.locator('.queue-item').filter(has_text=label)).to_be_visible(timeout=12000)
         send(user, label + '：还有一个问题')
-        expect(user.locator('.status')).to_have_text('等待人工')
-        expect(user.get_by_role('button', name='已申请人工')).to_be_disabled()
-        expect(staff.locator('.queue-item').filter(has_text='还有一个问题')).to_have_count(0, timeout=12000)
+        expect(user.locator('.status')).to_have_text('可留言')
+        expect(user.get_by_role('button', name='转人工', exact=True)).to_be_enabled()
+        expect(staff.locator('.queue-item').filter(has_text='还有一个问题')).to_be_visible(timeout=12000)
+        staff.get_by_role('button', name='待处理', exact=False).click()
+        expect(staff.locator('.queue-item').filter(has_text='还有一个问题')).to_have_count(0)
+        user.get_by_role('button', name='转人工', exact=True).click()
         staff.get_by_role('button', name='待处理', exact=False).click()
         expect(staff.locator('.queue-item').filter(has_text='还有一个问题')).to_be_visible(timeout=12000)
         expect(staff.locator('.handoff-round')).to_contain_text('02', timeout=12000)

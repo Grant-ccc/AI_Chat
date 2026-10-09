@@ -1,6 +1,8 @@
+param([switch]$TestDb)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$pidFile = Join-Path $projectRoot '.local/dev-processes.json'
+$pidName = if ($TestDb) { '.local/test-dev-processes.json' } else { '.local/dev-processes.json' }
+$pidFile = Join-Path $projectRoot $pidName
 if (-not (Test-Path -LiteralPath $pidFile)) { Write-Host 'No saved dev processes.'; exit }
 $devProcesses = Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json
 foreach ($item in $devProcesses.PSObject.Properties) {

@@ -111,11 +111,9 @@ def send_message(db, c, data, role):
         raise HTTPException(409, '当前会话未接手或已结束，不能回复。')
     if c.sequence >= 2000:
         raise HTTPException(409, '演示会话已达到消息上限，请联系项目负责人。')
-    previous = latest_handoff(db, c, lock=True) if role == 'user' and c.status in ('ended', 'ai_ready') else None
+    if role == 'user' and c.status == 'ended':
+        c.status = 'ai_ready'
     add_message(db, c, role, data.content, client_id)
-    if previous and previous.ended_at:
-        open_handoff(db, c, previous, '上一轮结束后用户继续咨询',
-                     '已开始新一轮咨询，正在等待人工接待，可以继续补充文字。')
 
 
 @router.post('/visitor/messages')
