@@ -137,6 +137,66 @@ class HybridRetriever:
         return result
 
 
+def split_query_segments(query, max_segments=4):
+    """Conservative punctuation split; no inferred intent, keyword dictionary or rewritten text."""
+    if not query.strip() or max_segments < 1:
+        raise ValueError('问题不能为空，片段上限须为正数')
+    segments = []
+    for part in re.split(r'[。！？!?；;\n]+', query):
+        part = part.strip(' \t\r“”"')
+        if part and part not in segments:
+            segments.append(part)
+    # Never drop later questions when the heuristic reaches its limit.
+    if not segments or len(segments) > max_segments:
+        return [query.strip()]
+    return segments
+
+
+class SegmentedRetriever:
+    """Experimental per-segment retrieval with round-robin coverage, not sufficiency checking."""
+    def __init__(self, retriever, candidate_window=10, max_segments=4):
+        if candidate_window < 1 or max_segments < 1:
+            raise ValueError('候选窗口与片段上限须为正数')
+        self.retriever = retriever
+        self.candidate_window = candidate_window
+        self.max_segments = max_segments
+
+    def search(self, query, top_k=3):
+        if not 1 <= top_k <= self.candidate_window:
+            raise ValueError('最终候选数须在1和候选窗口之间')
+        started = perf_counter()
+        segments = split_query_segments(query, self.max_segments)
+        # One segment keeps exactly the original query/ranking, including its punctuation.
+        queries = [query] if len(segments) == 1 else segments
+        results = [self.retriever.search(part, self.candidate_window) for part in queries]
+        chosen, seen = [], set()
+        positions = [0] * len(results)
+        while len(chosen) < top_k:
+            added = False
+            for stream, result in enumerate(results):
+                while positions[stream] < len(result['hits']) and result['hits'][positions[stream]]['id'] in seen:
+                    positions[stream] += 1
+                if positions[stream] >= len(result['hits']):
+                    continue
+                rank = positions[stream]
+                hit = result['hits'][rank]
+                positions[stream] += 1
+                seen.add(hit['id'])
+                matches = [dict(query=queries[i], rank=j+1, score=candidate['score'], score_type=route['score_type'])
+                           for i, route in enumerate(results) for j, candidate in enumerate(route['hits'])
+                           if candidate['id'] == hit['id']]
+                chosen.append(dict(hit, segment_matches=matches))
+                added = True
+                if len(chosen) == top_k:
+                    break
+            if not added:
+                break
+        return dict(hits=chosen, score_type='segmented_round_robin', queries=queries,
+                    candidate_window=self.candidate_window, max_segments=self.max_segments,
+                    elapsed_ms=round((perf_counter()-started)*1000, 3), sufficiency='unvalidated',
+                    warning='按句子分配候选位置；原分数只描述各句内部排序，不是全局可信度。')
+
+
 def ranked(documents, scores, top_k, score_type, started, positive_only=False):
     if top_k < 1:
         raise ValueError('top_k 必须大于零')
