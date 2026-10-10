@@ -175,6 +175,20 @@ def test_restart_fails_interrupted_job_without_retry(review_db, monkeypatch):
     assert decide(merchant(), cid, draft, 'handoff').status_code == 200
 
 
+def test_limit_reached_is_explicit_and_can_transfer(review_db, monkeypatch):
+    def limited(*args):
+        raise ai_review.TrialLimitError('已达到本地费用预留上限，这不是接口故障。')
+    monkeypatch.setattr(ai_review, 'generate', limited)
+    v, cid = visitor()
+    m = merchant()
+    v.post('/api/visitor/messages', json=payload('问题'))
+    draft = draft_for(m, cid)
+    assert draft['status'] == 'limited' and '费用预留上限' in draft['note']
+    assert v.get('/api/visitor/conversation').json()['ai']['phase'] == 'limited'
+    assert decide(m, cid, draft).status_code == 409
+    assert decide(m, cid, draft, 'handoff').status_code == 200
+
+
 def test_cited_proposal_only_available_to_authenticated_reviewer(review_db, monkeypatch):
     from app.retrieval import load_documents
     _, docs = load_documents(ai_review.ROOT / 'knowledge/public.json')

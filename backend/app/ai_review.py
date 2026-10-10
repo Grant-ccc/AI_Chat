@@ -7,9 +7,10 @@ from . import config
 from .db import SessionLocal
 from .models import AiReview, Message, now
 from .answer_contract import GenerationContext, build_deepseek_request, check_proposal, public_evidence
+from .deepseek_probe import TrialLimitError
 
 ROOT = Path(__file__).resolve().parents[2]
-ACTIVE = ('queued', 'generating', 'ready', 'failed', 'invalid', 'rejected')
+ACTIVE = ('queued', 'generating', 'ready', 'failed', 'invalid', 'rejected', 'limited')
 
 
 def current_review(db, c):
@@ -90,8 +91,8 @@ def generate(draft_id, mode, started, question, history, hits):
             'reason': '这是模拟联调候选，用于验证审核流程；真实业务回答需要启用官方模型。'}, ensure_ascii=False)}
     if mode != 'deepseek' or not config.AI_REVIEW_PAID_APPROVED:
         return {'status': 'disabled'}
-    from .deepseek_probe import ProbeSettings, CallLedger, send_once
-    settings = ProbeSettings.load(ROOT / 'backend/.env')
+    from .deepseek_probe import WebSettings, CallLedger, send_once
+    settings = WebSettings.load(ROOT / 'backend/.env')
     policy = json.loads((ROOT / 'knowledge/answer-policy.json').read_text(encoding='utf-8'))
     request = build_deepseek_request(started, question, history, hits, policy, settings.model)
     # A separate, persistent web trial budget. Never clear or reuse the spent offline ledger.
@@ -139,6 +140,8 @@ def run_review(draft_id):
     try:
         hits = [] if mode == 'mock' else retrieve(question, history, started)
         result = generate(draft_id, mode, started, question, history, hits)
+    except TrialLimitError as error:
+        result = {'status': 'limit_reached', 'note': str(error)}
     except Exception:
         # No provider error body, secret, raw output or traceback in visitor-facing data.
         hits, result = [], {'status': 'failed'}
@@ -151,7 +154,9 @@ def run_review(draft_id):
                 draft.status = 'stale'
                 db.commit()
             return
-        if result.get('status') != 'complete':
+        if result.get('status') == 'limit_reached':
+            draft.status, draft.note = 'limited', result['note']
+        elif result.get('status') != 'complete':
             draft.status, draft.note = 'failed', '未能生成可用候选，请转人工处理；不会自动重试。'
         else:
             checked = check_proposal(result.get('content'), hits, started, current, result.get('finish_reason'))

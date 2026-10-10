@@ -11,7 +11,7 @@ export default function ReviewPanel({ draft, busy, decide }: {
 }) {
   const [content, setContent] = useState(draft.candidate || '');
   const [confirmed, setConfirmed] = useState(false);
-  const actionable = ['queued', 'generating', 'ready', 'failed', 'invalid', 'rejected'].includes(draft.status);
+  const actionable = ['queued', 'generating', 'ready', 'failed', 'invalid', 'rejected', 'limited'].includes(draft.status);
   return <section className="review-panel" aria-label="AI候选审核">
     <p className="eyebrow">REVIEW BEFORE SEND</p><h2>AI 候选审核</h2>
     <div className="review-state">{reviewLabel[draft.status] || draft.status}</div>

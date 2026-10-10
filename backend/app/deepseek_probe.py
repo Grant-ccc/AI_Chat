@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
+from typing import ClassVar
 
 import httpx
 from dotenv import dotenv_values
@@ -19,6 +20,8 @@ OUTPUT_RATE = Decimal('8')
 
 @dataclass(frozen=True)
 class ProbeSettings:
+    calls_key: ClassVar[str] = 'DEEPSEEK_TEST_MAX_CALLS'
+    budget_key: ClassVar[str] = 'DEEPSEEK_TEST_BUDGET_CNY'
     api_key: str = field(repr=False)
     base_url: str = 'https://api.deepseek.com'
     model: str = 'deepseek-flash'
@@ -36,20 +39,44 @@ class ProbeSettings:
                      base_url=values.get('DEEPSEEK_BASE_URL') or '',
                      model=values.get('DEEPSEEK_MODEL') or '',
                      timeout=int(values.get('DEEPSEEK_TIMEOUT_SECONDS') or '90'),
-                     max_calls=int(values.get('DEEPSEEK_TEST_MAX_CALLS') or '7'),
-                     budget=Decimal(values.get('DEEPSEEK_TEST_BUDGET_CNY') or '1.00'))
+                     max_calls=int(values.get(cls.calls_key) or str(cls.max_calls)),
+                     budget=Decimal(values.get(cls.budget_key) or str(cls.budget)))
         result.validate()
         return result
 
-    def validate(self):
+    def validate_connection(self):
         if not self.api_key.strip() or any(c.isspace() for c in self.api_key):
             raise ValueError('请检查本地Key是否已填写且没有空白字符')
         if self.base_url != 'https://api.deepseek.com' or self.model != 'deepseek-flash':
             raise ValueError('本轮仅授权DeepSeek官方地址和deepseek-flash模型')
-        if not 1 <= self.timeout <= 90 or not 1 <= self.max_calls <= 7:
+        if not 1 <= self.timeout <= 90:
+            raise ValueError('超出超时限制')
+
+    def validate(self):
+        self.validate_connection()
+        if not 1 <= self.max_calls <= 7:
             raise ValueError('超出本轮超时或次数限制')
         if not self.budget.is_finite() or not Decimal('0') < self.budget <= Decimal('1'):
             raise ValueError('超出本轮预算限制')
+
+
+@dataclass(frozen=True)
+class WebSettings(ProbeSettings):
+    """网页本地配置与原离线授权分开；0表示不限制次数，费用保护仍生效。"""
+    calls_key: ClassVar[str] = 'DEEPSEEK_WEB_MAX_CALLS'
+    budget_key: ClassVar[str] = 'DEEPSEEK_WEB_BUDGET_CNY'
+    max_calls: int = 0
+
+    def validate(self):
+        self.validate_connection()
+        if type(self.max_calls) is not int or self.max_calls < 0:
+            raise ValueError('网页调用次数必须为非负整数，0表示不限制')
+        if not self.budget.is_finite() or self.budget <= 0:
+            raise ValueError('网页费用预留上限必须为有限正数')
+
+
+class TrialLimitError(ValueError):
+    """Only fixed, safe limit messages may be displayed in the review panel."""
 
 
 def prepare_payload(request, settings):
@@ -95,8 +122,10 @@ class CallLedger:
             if any(row[0] == case_id for row in rows):
                 raise ValueError('此题已有调用记录，不重复发送')
             total = sum((Decimal(row[1]) for row in rows), Decimal('0'))
-            if len(rows) >= settings.max_calls or total + cost > settings.budget:
-                raise ValueError('已达到调用次数或费用预留上限')
+            if settings.max_calls and len(rows) >= settings.max_calls:
+                raise TrialLimitError('已达到本地调用次数上限，需调整测试配置后再试。')
+            if total + cost > settings.budget:
+                raise TrialLimitError('已达到本地费用预留上限，需调整费用配置或转人工；这不是接口故障。')
             cursor = db.execute('INSERT INTO attempts(case_id,reserved,status,created) VALUES(?,?,?,?)',
                                 (case_id, str(cost), 'pending', datetime.now(timezone.utc).isoformat()))
             return cursor.lastrowid

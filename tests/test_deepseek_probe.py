@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
-from app.deepseek_probe import CallLedger, ProbeSettings, prepare_payload, send_once
+from app.deepseek_probe import CallLedger, ProbeSettings, WebSettings, TrialLimitError, prepare_payload, send_once
 
 
 def request():
@@ -74,6 +74,55 @@ def test_seventh_call_survives_process_restart(tmp_path):
         ledger.finish(attempt, 'complete')
     with pytest.raises(ValueError):
         CallLedger(path).reserve('eighth', Decimal('.01'), settings())
+
+
+def test_web_unlimited_keeps_previous_records_and_budget_guard(tmp_path):
+    path = tmp_path / 'web.sqlite3'
+    for index in range(7):
+        ledger = CallLedger(path)
+        attempt = ledger.reserve(str(index), Decimal('.01'), settings())
+        ledger.finish(attempt, 'complete')
+    web = WebSettings(api_key='fake-test-secret')
+    ledger = CallLedger(path)
+    attempt = ledger.reserve('eighth', Decimal('.01'), web)
+    ledger.finish(attempt, 'complete')
+    assert ledger.snapshot()['calls'] == 8
+    assert ledger.snapshot()['reserved_cny'] == '0.08'
+    with pytest.raises(TrialLimitError, match='费用预留上限'):
+        ledger.reserve('too-expensive', Decimal('1'), web)
+    assert ledger.snapshot()['calls'] == 8
+
+
+def test_web_configuration_is_separate_from_offline(tmp_path):
+    path = tmp_path / 'config.env'
+    path.write_text('DEEPSEEK_API_KEY=fake-test-secret\nDEEPSEEK_BASE_URL=https://api.deepseek.com\n'
+                    'DEEPSEEK_MODEL=deepseek-flash\nDEEPSEEK_TEST_MAX_CALLS=7\n'
+                    'DEEPSEEK_TEST_BUDGET_CNY=1.00\nDEEPSEEK_WEB_MAX_CALLS=0\n'
+                    'DEEPSEEK_WEB_BUDGET_CNY=1.00\n', encoding='utf-8')
+    assert ProbeSettings.load(path).max_calls == 7
+    assert WebSettings.load(path).max_calls == 0
+    assert WebSettings.load(path).budget == Decimal('1')
+
+
+def test_web_finite_call_limit_and_failed_guard_still_work(tmp_path):
+    ledger = CallLedger(tmp_path / 'finite.sqlite3')
+    web = WebSettings(api_key='fake-test-secret', max_calls=1)
+    attempt = ledger.reserve('one', Decimal('.01'), web)
+    ledger.finish(attempt, 'complete')
+    with pytest.raises(TrialLimitError, match='调用次数上限'):
+        ledger.reserve('two', Decimal('.01'), web)
+    unlimited = WebSettings(api_key='fake-test-secret')
+    attempt = ledger.reserve('two', Decimal('.01'), unlimited)
+    ledger.finish(attempt, 'failed')
+    with pytest.raises(ValueError, match='失败或结果未知'):
+        ledger.reserve('three', Decimal('.01'), unlimited)
+
+
+@pytest.mark.parametrize('change', [dict(max_calls=-1), dict(budget=Decimal('0')),
+                                  dict(budget=Decimal('NaN')), dict(timeout=91)])
+def test_web_invalid_configuration_rejected(change):
+    with pytest.raises(ValueError):
+        WebSettings(api_key='fake-test-secret', **change).validate()
 
 
 def test_concurrent_reservations_only_allow_one(tmp_path):
