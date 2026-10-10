@@ -9,9 +9,6 @@ def ensure_schema(target):
     if 'viewed' not in columns:
         with target.begin() as connection:
             connection.execute(text('ALTER TABLE handoffs ADD COLUMN viewed BOOLEAN NOT NULL DEFAULT FALSE'))
-    if 'ended_sequence' not in columns:
-        with target.begin() as connection:
-            connection.execute(text('ALTER TABLE handoffs ADD COLUMN ended_sequence INTEGER NULL'))
 
 
 if __name__ == '__main__':

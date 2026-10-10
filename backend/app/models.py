@@ -50,26 +50,6 @@ class Handoff(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     taken_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    ended_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-
-class AiReview(Base):
-    __tablename__ = 'ai_reviews'
-    __table_args__ = (UniqueConstraint('conversation_id', 'user_sequence'),)
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    conversation_id: Mapped[str] = mapped_column(ForeignKey('conversations.id'), index=True)
-    user_sequence: Mapped[int] = mapped_column(Integer)
-    source_revision: Mapped[int] = mapped_column(Integer)
-    mode: Mapped[str] = mapped_column(String(16))
-    status: Mapped[str] = mapped_column(String(24), default='queued')
-    proposal_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    candidate: Mapped[str | None] = mapped_column(Text, nullable=True)
-    final_content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    reviewed_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class VisitorSession(Base):

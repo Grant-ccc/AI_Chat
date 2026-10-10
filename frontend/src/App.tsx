@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { api, ApiError, statusLabel, reviewLabel, aiHint, shortId, time } from './api';
-import ReviewPanel from './ReviewPanel';
+import { api, ApiError, statusLabel, shortId, time } from './api';
 import type { Conversation, Queue } from './api';
 
 function WindowMark({ large = false }: { large?: boolean }) {
@@ -67,10 +66,10 @@ function Messages({ conversation, merchant = false, onSeen }: { conversation: Co
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     if (atBottom.current) setNewMessages(false);
   }}>
-    <div className="history-date">二团历史模拟 · 业务日期 {conversation.ai.simulation_date} · 消息时间为实际发送时间</div>
-    {conversation.messages.length === 0 && <div className="welcome"><WindowMark large /><p className="eyebrow">在这里，慢慢说</p><h2>关于你的花窗伞</h2><p>回复由商家审核后发送。<br />也可以直接申请人工接待。</p></div>}
+    <div className="history-date">二团历史模拟 · {new Date().toLocaleDateString('zh-CN')}</div>
+    {conversation.messages.length === 0 && <div className="welcome"><WindowMark large /><p className="eyebrow">在这里，慢慢说</p><h2>关于你的花窗伞</h2><p>本阶段 AI 尚未接入。<br />可以先留下文字，再申请人工接待。</p></div>}
     {conversation.messages.map(message => message.role === 'system' ? <div className="system-event" key={message.id} data-sequence={message.sequence}>{message.content}</div> : <article key={message.id} data-sequence={message.sequence} className={`message ${message.role === (merchant ? 'merchant' : 'user') ? 'own' : 'other'}`}>
-      <div className="message-meta">{message.role === 'user' ? (merchant ? '访客' : '你') : message.role === 'assistant' ? 'AI · 商家已审核' : '商家'}<time dateTime={message.created_at}>{time(message.created_at)}</time></div>
+      <div className="message-meta">{message.role === 'user' ? (merchant ? '访客' : '你') : '商家'}<time dateTime={message.created_at}>{time(message.created_at)}</time></div>
       <div className="bubble">{message.content}</div>
     </article>)}
   </div>{newMessages && <button className="new-messages" onClick={() => { atBottom.current = true; scroll.current!.scrollTop = scroll.current!.scrollHeight; setNewMessages(false); }}>有新消息 · 查看 ↓</button>}</div>;
@@ -116,8 +115,8 @@ function Visitor() {
     try { accept(await api<Conversation>('/visitor/handoff', {}, csrf)); } catch (e) { failed(e); } finally { setBusy(false); }
   }
   const state = data?.status;
-  return <><Header /><main className="visitor-layout"><aside className="visitor-intro"><p className="eyebrow">花窗伞 · 客服试用</p><h1>一把伞的事，<br />在这里聊。</h1><p className="intro-copy">商品疑问、使用困惑、售后沟通。<br />留下一段文字，我们一起处理。</p><div className="intro-rule" /><div className="small-note"><span className="number">01</span><p>支持文字咨询与人工接待。<br />AI 候选需经商家审核。</p></div><div className="small-note"><span className="number">02</span><p>同一浏览器保留历史记录。<br />请勿在此发送密码等敏感信息。</p></div><div className="intro-bottom">FLOWER WINDOW UMBRELLA<span>每一次咨询，认真接住。</span></div></aside><section className="chat-panel" aria-label="用户会话"><div className="chat-heading"><div><p className="eyebrow">你的专属会话</p><h2>花窗伞客服</h2></div><div className="chat-actions">{state && <Status state={state} />}<button className="secondary" onClick={handoff} disabled={!csrf || !data || busy || state === 'waiting_human' || state === 'human_active'}>{busy ? '处理中…' : state === 'waiting_human' ? '已申请人工' : state === 'human_active' ? '人工已接手' : '转人工'}</button></div></div>
-      <div className="state-note">{state === 'waiting_human' ? '已申请人工，可以继续补充问题。' : state === 'human_active' ? '商家正在接待，请在下方继续沟通。' : state === 'ended' ? '本次处理已结束，历史保留。可以继续留言，需要人工时请再次点击“转人工”。' : aiHint(data?.ai)}</div>
+  return <><Header /><main className="visitor-layout"><aside className="visitor-intro"><p className="eyebrow">花窗伞 · 客服试用</p><h1>一把伞的事，<br />在这里聊。</h1><p className="intro-copy">商品疑问、使用困惑、售后沟通。<br />留下一段文字，我们一起处理。</p><div className="intro-rule" /><div className="small-note"><span className="number">01</span><p>本阶段支持文字留言与人工接待。<br />AI 回答将在后续接入。</p></div><div className="small-note"><span className="number">02</span><p>同一浏览器保留历史记录。<br />请勿在此发送密码等敏感信息。</p></div><div className="intro-bottom">FLOWER WINDOW UMBRELLA<span>每一次咨询，认真接住。</span></div></aside><section className="chat-panel" aria-label="用户会话"><div className="chat-heading"><div><p className="eyebrow">你的专属会话</p><h2>花窗伞客服</h2></div><div className="chat-actions">{state && <Status state={state} />}<button className="secondary" onClick={handoff} disabled={!csrf || !data || busy || state === 'waiting_human' || state === 'human_active'}>{busy ? '处理中…' : state === 'waiting_human' ? '已申请人工' : state === 'human_active' ? '人工已接手' : '转人工'}</button></div></div>
+      <div className="state-note">{state === 'waiting_human' ? '已申请人工，可以继续补充问题。' : state === 'human_active' ? '商家正在接待，请在下方继续沟通。' : state === 'ended' ? '本次处理已结束，历史保留。可以继续留言，需要人工时请再次点击“转人工”。' : 'AI 尚未接入 · 留言后请点击「转人工」获得回复。'}</div>
       {error && <Notice>{error} {expired ? <button className="text-button" disabled={busy} onClick={async () => { setBusy(true); try { await api('/visitor/reset', {}); setData(null); await bootstrap(); } catch (e) { failed(e); setBusy(false); } }}>建立新会话（原记录无法恢复）</button> : !csrf && <button className="text-button" disabled={busy} onClick={bootstrap}>重试连接</button>}</Notice>}
       {data ? <Messages key={data.id} conversation={data} /> : <div className="empty-state">{expired ? '会话凭据已失效' : '正在连接你的会话…'}</div>}
       <Composer disabled={!csrf || !data || expired} hint="仅支持文字" send={async (content, id) => { try { accept(await api<Conversation>('/visitor/messages', { content, client_message_id: id }, csrf)); setError(''); } catch (e) { failed(e); throw e; } }} />
@@ -128,8 +127,8 @@ function Merchant() {
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [queue, setQueue] = useState<Queue>({ pending: [], ended: [], reviews: [] });
-  const [tab, setTab] = useState<'pending' | 'ended' | 'reviews'>('reviews');
+  const [queue, setQueue] = useState<Queue>({ pending: [], ended: [] });
+  const [tab, setTab] = useState<'pending' | 'ended'>('pending');
   const [selected, setSelected] = useState('');
   const [detail, setDetail] = useState<Conversation | null>(null);
   const selectedRef = useRef('');
@@ -141,7 +140,7 @@ function Merchant() {
   function failed(e: unknown) {
     if (!active.current) return;
     setError((e as Error).message);
-    if (e instanceof ApiError && e.status === 401) { active.current = false; setCsrf(''); setDetail(null); selectedRef.current = ''; setSelected(''); setQueue({ pending: [], ended: [], reviews: [] }); }
+    if (e instanceof ApiError && e.status === 401) { active.current = false; setCsrf(''); setDetail(null); selectedRef.current = ''; setSelected(''); setQueue({ pending: [], ended: [] }); }
   }
   useEffect(() => {
     let alive = true;
@@ -185,11 +184,6 @@ function Merchant() {
     setBusy(true); setError('');
     try { accept(await api<Conversation>(`/merchant/conversations/${detail.id}/${name}`, { handoff_id: detail.handoff.id }, csrf)); await refresh(); } catch (e) { failed(e); } finally { setBusy(false); }
   }
-  async function reviewAction(name: 'approve' | 'reject' | 'handoff', content?: string) {
-    if (!detail?.review || busy) return;
-    setBusy(true); setError('');
-    try { accept(await api<Conversation>(`/merchant/conversations/${detail.id}/reviews/${detail.review.id}/${name}`, { content: content || null, confirmed: name === 'approve' }, csrf)); await refresh(); } catch (e) { failed(e); } finally { setBusy(false); }
-  }
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError('');
     const form = new FormData(event.currentTarget);
@@ -198,12 +192,12 @@ function Merchant() {
   }
   async function logout() {
     if (busy) return; setBusy(true);
-    try { await api('/merchant/logout', {}, csrf); active.current = false; setCsrf(''); setSelected(''); selectedRef.current = ''; setDetail(null); setQueue({ pending: [], ended: [], reviews: [] }); setError(''); }
+    try { await api('/merchant/logout', {}, csrf); active.current = false; setCsrf(''); setSelected(''); selectedRef.current = ''; setDetail(null); setQueue({ pending: [], ended: [] }); setError(''); }
     catch (e) { failed(e); } finally { setBusy(false); }
   }
   if (!csrf) return <><Header merchant /><main className="login-layout"><section className="login-intro"><WindowMark large /><p className="eyebrow">商家工作台</p><h1>把每一次咨询，<br />接着聊完。</h1><p>查看历史，接手会话，回复与结束处理。<br />一处完成文字接待。</p></section><form className="login-card" onSubmit={login}><p className="eyebrow">MERCHANT ACCESS</p><h2>登录工作台</h2><p className="muted">使用项目负责人提供的商家账号。</p>{error && <Notice>{error}</Notice>}<label htmlFor="username">账号</label><input id="username" name="username" autoComplete="username" defaultValue="merchant" required maxLength={80} disabled={busy || checking} /><label htmlFor="password">密码</label><input id="password" name="password" type="password" autoComplete="current-password" required maxLength={128} disabled={busy || checking} /><button className="primary" disabled={busy || checking}>{checking ? '检查登录状态…' : busy ? '登录中…' : '进入工作台 →'}</button><span className="login-footnote">仅供商家接待使用</span></form></main></>;
   const state = detail?.status;
   const h = detail?.handoff;
-  return <><Header merchant logout={logout} /><main className="workspace"><aside className="queue-panel"><div className="queue-heading"><p className="eyebrow">INBOX</p><h1>接待台<span>{queue.pending.length} 待处理</span></h1></div><div className="queue-tabs"><button className={tab === 'reviews' ? 'active' : ''} onClick={() => setTab('reviews')}>AI 审核 <span>{queue.reviews.length}</span></button><button className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')}>待处理 <span>{queue.pending.length}</span></button><button className={tab === 'ended' ? 'active' : ''} onClick={() => setTab('ended')}>已结束 <span>{queue.ended.length}</span></button></div><div className="queue-list">{queue[tab].length === 0 && <div className="queue-empty">{tab === 'reviews' ? '暂无待审核候选' : tab === 'pending' ? '暂时没有待处理会话' : '暂无已结束会话'}<span>新的咨询会在这里出现。</span></div>}{queue[tab].map(row => <button key={row.id} className={`queue-item ${selected === row.id ? 'selected' : ''}`} onClick={() => void choose(row.id)}><div className="queue-item-head"><strong>访客 {shortId(row.id)}</strong><time>{time(row.updated_at)}</time></div><p>{row.preview}</p><div className="queue-item-bottom"><span>{row.review_status ? reviewLabel[row.review_status] : statusLabel[row.status]}</span>{row.unread && <span className="unread">未读 <i /></span>}</div></button>)}</div><div className="queue-footer"><i />约 2 秒同步一次</div></aside><section className="workspace-chat">{error && <Notice>{error}</Notice>}{detail ? <><div className="chat-heading"><div><p className="eyebrow">会话记录</p><h2>访客 {shortId(detail.id)}</h2></div><Status state={detail.status} /></div><Messages key={detail.id} conversation={detail} merchant onSeen={sequence => void markRead(sequence)} /><Composer key={detail.id} disabled={state !== 'human_active' || busy} hint={state === 'human_active' ? '商家回复 · 仅支持文字' : state === 'waiting_human' ? '接手后可回复' : state === 'ai_ready' ? '请在审核区处理候选或转人工' : '本次处理已结束，记录只读'} send={async (content, id) => { try { accept(await api<Conversation>(`/merchant/conversations/${detail.id}/messages`, { content, client_message_id: id }, csrf)); await refresh(); } catch (e) { failed(e); throw e; } }} /></> : <div className="empty-state"><WindowMark large /><h2>{selected ? '正在读取会话…' : '选择一段会话'}</h2><p>完整记录在这里展开。<br />查看不会自动接手会话。</p></div>}</section><aside className="handoff-panel">{state === 'ai_ready' && detail?.review && <ReviewPanel key={`${detail.review.id}:${detail.review.status}`} draft={detail.review} busy={busy} decide={reviewAction} />}{detail && state !== 'ai_ready' && <><p className="eyebrow">HANDOFF</p><h2>{h?.ended_at ? '上次交接（已结束）' : '本次交接'}</h2>{h && detail ? <><div className="handoff-round">第 <strong>{String(h.round).padStart(2, '0')}</strong> 次交接</div><dl><dt>转交原因</dt><dd>{h.reason}</dd><dt>转交时间</dt><dd>{new Date(h.created_at).toLocaleString('zh-CN', { hour12: false })}</dd><dt>转交时记录范围</dt><dd>{h.covered_sequence ? `第 1—${h.covered_sequence} 条消息` : '转交前暂无消息'}</dd></dl><div className="summary-placeholder"><span>AI 摘要</span><p>尚未接入</p><small>请查看中栏完整会话记录。</small></div><div className="handoff-actions"><button className="primary" onClick={() => void action('takeover')} disabled={busy || state !== 'waiting_human'}>{state === 'human_active' ? '已接手' : '接手会话'}</button><button className="secondary" onClick={() => void action('end')} disabled={busy || state !== 'human_active'}>结束本次处理</button><p>结束后保留全部历史。<br />用户主动转人工后回到待处理。</p></div></> : <p className="muted">暂无人工交接信息。</p>}</>}{!detail && <p className="muted">选择会话后查看处理信息。</p>}{state === 'ai_ready' && !detail?.review && <p className="muted">当前为普通咨询，尚未生成候选回复。</p>}</aside></main></>;
+  return <><Header merchant logout={logout} /><main className="workspace"><aside className="queue-panel"><div className="queue-heading"><p className="eyebrow">INBOX</p><h1>接待台<span>{queue.pending.length} 待处理</span></h1></div><div className="queue-tabs"><button className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')}>待处理 <span>{queue.pending.length}</span></button><button className={tab === 'ended' ? 'active' : ''} onClick={() => setTab('ended')}>已结束 <span>{queue.ended.length}</span></button></div><div className="queue-list">{queue[tab].length === 0 && <div className="queue-empty">{tab === 'pending' ? '暂时没有待处理会话' : '暂无已结束会话'}<span>新的咨询会在这里出现。</span></div>}{queue[tab].map(row => <button key={row.id} className={`queue-item ${selected === row.id ? 'selected' : ''}`} onClick={() => void choose(row.id)}><div className="queue-item-head"><strong>访客 {shortId(row.id)}</strong><time>{time(row.updated_at)}</time></div><p>{row.preview}</p><div className="queue-item-bottom"><span>{statusLabel[row.status]}</span>{row.unread && <span className="unread">未读 <i /></span>}</div></button>)}</div><div className="queue-footer"><i />约 2 秒同步一次</div></aside><section className="workspace-chat">{error && <Notice>{error}</Notice>}{detail ? <><div className="chat-heading"><div><p className="eyebrow">会话记录</p><h2>访客 {shortId(detail.id)}</h2></div><Status state={detail.status} /></div><Messages key={detail.id} conversation={detail} merchant onSeen={sequence => void markRead(sequence)} /><Composer key={detail.id} disabled={state !== 'human_active' || busy} hint={state === 'human_active' ? '商家回复 · 仅支持文字' : state === 'waiting_human' ? '接手后可回复' : '本次处理已结束，记录只读'} send={async (content, id) => { try { accept(await api<Conversation>(`/merchant/conversations/${detail.id}/messages`, { content, client_message_id: id }, csrf)); await refresh(); } catch (e) { failed(e); throw e; } }} /></> : <div className="empty-state"><WindowMark large /><h2>{selected ? '正在读取会话…' : '选择一段会话'}</h2><p>完整记录在这里展开。<br />查看不会自动接手会话。</p></div>}</section><aside className="handoff-panel"><p className="eyebrow">HANDOFF</p><h2>本次交接</h2>{h && detail ? <><div className="handoff-round">第 <strong>{String(h.round).padStart(2, '0')}</strong> 次交接</div><dl><dt>转交原因</dt><dd>{h.reason}</dd><dt>转交时间</dt><dd>{new Date(h.created_at).toLocaleString('zh-CN', { hour12: false })}</dd><dt>转交时记录范围</dt><dd>{h.covered_sequence ? `第 1—${h.covered_sequence} 条消息` : '转交前暂无消息'}</dd></dl><div className="summary-placeholder"><span>AI 摘要</span><p>尚未接入</p><small>请查看中栏完整会话记录。</small></div><div className="handoff-actions"><button className="primary" onClick={() => void action('takeover')} disabled={busy || state !== 'waiting_human'}>{state === 'human_active' ? '已接手' : '接手会话'}</button><button className="secondary" onClick={() => void action('end')} disabled={busy || state !== 'human_active'}>结束本次处理</button><p>结束后保留全部历史。<br />用户主动转人工后回到待处理。</p></div></> : <p className="muted">选择会话后查看交接信息。</p>}</aside></main></>;
 }
 export default function App() { return window.location.pathname.startsWith('/merchant') ? <Merchant /> : <Visitor />; }
