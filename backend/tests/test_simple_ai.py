@@ -147,6 +147,30 @@ def test_paid_budget_zero_stops_before_network(tmp_path, monkeypatch):
         simple_ai.ledger_call({'messages': [{'role': 'user', 'content': '问题'}]}, 'call', 'unused')
 
 
+def test_unlimited_calls_and_budget_keep_ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(simple_ai, 'ROOT', tmp_path)
+    monkeypatch.setattr(config, 'AI_WEB_MAX_CALLS', -1)
+    monkeypatch.setattr(config, 'AI_WEB_BUDGET_CNY', -1)
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, url, **kwargs):
+            import httpx
+            return httpx.Response(200, request=httpx.Request('POST', url), json={
+                'choices': [{'finish_reason': 'stop', 'message': {'content': '自然回复'}}],
+                'usage': {'prompt_tokens': 10, 'completion_tokens': 5}})
+    monkeypatch.setattr(simple_ai.httpx, 'Client', Client)
+    request = {'messages': [{'role': 'user', 'content': '问题'}]}
+    for i in range(15):
+        assert simple_ai.ledger_call(request, str(i), 'test-key') == '自然回复'
+    with sqlite3.connect(tmp_path / '.local/simple-web/ledger.sqlite3') as db:
+        assert db.execute('SELECT COUNT(*) FROM calls').fetchone()[0] == 15
+        db.execute("UPDATE calls SET status='failed_or_unknown' WHERE id='0'")
+    with pytest.raises(simple_ai.LimitError):
+        simple_ai.ledger_call(request, 'failed-guard', 'test-key')
+
+
 @pytest.mark.parametrize('kind', ['http_error', 'truncated', 'usage_overflow'])
 def test_bad_paid_results_pause_without_retry(tmp_path, monkeypatch, kind):
     monkeypatch.setattr(simple_ai, 'ROOT', tmp_path)

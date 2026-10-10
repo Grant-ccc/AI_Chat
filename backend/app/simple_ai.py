@@ -140,7 +140,8 @@ def ledger_call(request, task_id, key):
         ledger.execute('BEGIN IMMEDIATE')
         count, spent = ledger.execute('SELECT COUNT(*), COALESCE(SUM(reserve),0) FROM calls').fetchone()
         if (ledger.execute("SELECT 1 FROM calls WHERE status != 'complete'").fetchone()
-                or count >= config.AI_WEB_MAX_CALLS or spent + reserved > config.AI_WEB_BUDGET_CNY):
+                or (config.AI_WEB_MAX_CALLS >= 0 and count >= config.AI_WEB_MAX_CALLS)
+                or (config.AI_WEB_BUDGET_CNY >= 0 and spent + reserved > config.AI_WEB_BUDGET_CNY)):
             raise LimitError('Budget, count or uncertain request guard')
         ledger.execute('INSERT INTO calls (id,status,reserve) VALUES (?,?,?)', (task_id, 'pending', reserved))
         ledger.commit()
