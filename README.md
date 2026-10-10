@@ -151,6 +151,23 @@ R01—R10单独导出为`knowledge/answer-policy.json`，作为生成约束，�
 
 逐次JSON、演示Markdown和请求体位于忽略目录`.local/answer-contract`。准备请求示例使用字面检索，不表示已经选定最终检索方案。默认演示含真实引用、伪造原文、未知编号、错误部件推断、防晒资料缺失、已转人工的旧输出和截断七个场景；均为手工构造样例，不是真实模型表现。24项新增离线测试加上15项检索测试共39项通过；原人工客服代码未改动。下一步确认官方模型配置与少量真实调用范围，再对生成内容进行事实与动作复核；本步没有自动事实支持判定器、付费调用或公网部署。
 
+## DeepSeek官方接口本地配置（2026-10-10）
+
+用户已确认本轮离线测试最多7次调用、总预算上限1元，先验证1题，成功后再测6题，不自动重试。已在`backend/.env.example`和本机被Git忽略的`backend/.env`准备以下配置：
+
+```dotenv
+DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-flash
+DEEPSEEK_TIMEOUT_SECONDS=90
+DEEPSEEK_TEST_MAX_CALLS=7
+DEEPSEEK_TEST_BUDGET_CNY=1.00
+```
+
+在本机`backend/.env`的`DEEPSEEK_API_KEY=`后填写官方Key并保存，保留原有数据库配置；不要将整个示例文件覆盖到现有`.env`。无需把Key发到聊天、前端或仓库。环境文件中的Key留空表示尚未配置。
+
+官方[接入文档](https://api-docs.deepseek.com/)当前列出的模型名为`deepseek-flash`，学校模型名不直接沿用；官方模型版本与学校筛选时可能不同，仍需重新验证。本步只准备配置，不读取Key发送请求，网页不会因此启用AI。调用次数与预算配置将在后续测试发送器中实现限制，目前不是已生效的费用保护；实际调用前核实官方价格并按最大输入/输出量检查剩余额度，价格无法确认时不调用。
+
 ## 项目文档
 
 | 文档 | 内容 |
