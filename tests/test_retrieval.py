@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from app.retrieval import HybridRetriever, KeywordRetriever, fuse_rankings, load_documents
 from export_public_knowledge import export
 from retrieval_probe import analyze_semantic_scores, build_cases, build_gap_cases, summarize
+from retrieval_review import compare_reports, render_review
 
 
 def test_public_export_matches_source_and_excludes_internal_rules():
@@ -142,3 +143,42 @@ def test_boundary_index_preserves_facts_and_does_not_turn_constraints_into_facts
         assert after['search_text'] == before['search_text'] + '。回答边界：' + before['boundaries']
     with pytest.raises(ValueError, match='索引文本'):
         load_documents(ROOT / 'knowledge/public.json', 'unknown')
+
+
+def test_review_distinguishes_retrieval_changes_from_fact_support():
+    hit = dict(id='K05', topic='伞骨', facts='伞骨为不锈钢', boundaries='不能推断手柄材质',
+               round='二团', sources={'S04': {'name': '参与者确认'}}, score=0.71)
+    old = dict(id='T01', query='伞柄材质？', expected=['K05'], hits=[], score_type='rrf')
+    new = dict(**old, limitation='不能提供手柄材质')
+    new['hits'] = [hit]
+    baseline = dict(knowledge_sha256='same', results={'hybrid': [old]},
+                    summaries={'hybrid': dict(top_k=3, all_expected_found=0, positive_cases=1)})
+    candidate = dict(knowledge_sha256='same', results={'hybrid': [new]},
+                     summaries={'hybrid': dict(top_k=3, all_expected_found=1, positive_cases=1)})
+    item = compare_reports(baseline, candidate, 'hybrid')[0]
+    assert item['gained'] == ['K05']
+    assert item['review_status'] == 'pending'
+    markdown = render_review(baseline, candidate)
+    assert '事实：伞骨为不锈钢' in markdown
+    assert '回答边界：不能推断手柄材质' in markdown
+    assert '待人工复核' in markdown
+    assert '来源：S04：参与者确认' in markdown
+
+
+def test_review_rejects_changed_knowledge_questions_and_result_count():
+    import copy
+    row = dict(id='T01', query='下雨能用吗？', expected=['K02'], hits=[], score_type='rrf')
+    baseline = dict(knowledge_sha256='same', results={'hybrid': [row]},
+                    summaries={'hybrid': dict(top_k=3, all_expected_found=0, positive_cases=1)})
+    candidate = copy.deepcopy(baseline)
+    candidate['knowledge_sha256'] = 'different'
+    with pytest.raises(ValueError, match='对照条件'):
+        compare_reports(baseline, candidate, 'hybrid')
+    candidate = copy.deepcopy(baseline)
+    candidate['results']['hybrid'][0]['query'] = '修改后的问题'
+    with pytest.raises(ValueError, match='问题或预期'):
+        compare_reports(baseline, candidate, 'hybrid')
+    candidate = copy.deepcopy(baseline)
+    candidate['summaries']['hybrid']['top_k'] = 5
+    with pytest.raises(ValueError, match='条数'):
+        render_review(baseline, candidate)
