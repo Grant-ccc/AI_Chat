@@ -13,9 +13,9 @@ from app.retrieval import KeywordRetriever, load_documents
 
 
 def sample_proposal(doc, text, subject, attribute):
-    return dict(action='answer', needs=[dict(subject=subject, attribute=attribute,
-                status='supported', claim_indexes=[0])], claims=[dict(kind='fact', subject=subject,
-                attribute=attribute, text=text, evidence=[dict(knowledge_id=doc['id'], field='facts', quote=doc['facts'])])],
+    return dict(schema_version=2, action='answer', needs=[dict(subject=subject, attribute=attribute,
+                status='supported', claims=[dict(kind='fact', subject=subject,
+                attribute=attribute, text=text, evidence=[dict(knowledge_id=doc['id'], field='facts', quote=doc['facts'])])])],
                 question=None, reason=None)
 
 
@@ -25,9 +25,17 @@ def run_demo(documents, context):
     false_handle = sample_proposal(docs['K05'], '伞柄是不锈钢。', '伞柄', '材质')
     report = sample_proposal(docs['K06'], '目前没有可提供的防晒检测报告，无法确认具体指标。', '防晒报告', '可提供情况')
     fabricated = copy.deepcopy(rain)
-    fabricated['claims'][0]['evidence'][0]['quote'] = '能够抵抗十二级风。'
+    fabricated['needs'][0]['claims'][0]['evidence'][0]['quote'] = '能够抵抗十二级风。'
     unknown = copy.deepcopy(rain)
-    unknown['claims'][0]['evidence'][0]['knowledge_id'] = 'K99'
+    unknown['needs'][0]['claims'][0]['evidence'][0]['knowledge_id'] = 'K99'
+    mixed = copy.deepcopy(rain)
+    mixed['action'], mixed['reason'] = 'handoff', '换货需要商家处理。'
+    mixed['needs'].append(dict(subject='用户申请', attribute='换货', status='human_decision', claims=[]))
+    reminder = sample_proposal(docs['K19'], '请准备完整订单截图和清晰瑕疵照片。', '售后申请', '处理')
+    reminder['action'], reminder['reason'] = 'handoff', '申请需要商家判断，材料提醒不代表获批。'
+    reminder['needs'][0]['status'] = 'human_decision'
+    clarify = dict(schema_version=2, action='clarify', needs=[dict(subject='商品', attribute='开合方式',
+                   status='missing_user', claims=[])], question='请问是自动款还是手动款？', reason=None)
     outputs = []
     for title, proposal, selected, current, finish in [
         ('雨天使用：引用真实，但事实与业务动作仍需复核', rain, [docs['K02']], context, 'stop'),
@@ -38,6 +46,9 @@ def run_demo(documents, context):
         ('用户已转人工：旧输出应丢弃', rain, [docs['K02']],
             GenerationContext(**(context.model_dump() | dict(status='waiting_human', revision=context.revision+1))), 'stop'),
         ('模型输出被截断：应拒绝', rain, [docs['K02']], context, 'length'),
+        ('混合诉求：回答已知部分并保留待人工申请', mixed, [docs['K02']], context, 'stop'),
+        ('转人工时附材料提醒：仍未决定申请结果', reminder, [docs['K19']], context, 'stop'),
+        ('缺少用户条件：追问一个条件', clarify, [], context, 'stop'),
     ]:
         result = check_proposal(json.dumps(proposal, ensure_ascii=False), selected, context, current, finish)
         outputs.append(dict(case=title, input_proposal=proposal, result=result))

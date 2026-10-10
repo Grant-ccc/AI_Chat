@@ -24,9 +24,9 @@ def hits(*ids):
 
 def proposal(id_='K02', text='可以在雨天正常使用。', subject='二团晴雨伞', attribute='雨天使用'):
     doc = hits(id_)[0]
-    return dict(action='answer', needs=[dict(subject=subject, attribute=attribute,
-                status='supported', claim_indexes=[0])], claims=[dict(kind='fact', subject=subject,
-                attribute=attribute, text=text, evidence=[dict(knowledge_id=id_, field='facts', quote=doc['facts'])])],
+    return dict(schema_version=2, action='answer', needs=[dict(subject=subject, attribute=attribute,
+                status='supported', claims=[dict(kind='fact', subject=subject,
+                attribute=attribute, text=text, evidence=[dict(knowledge_id=id_, field='facts', quote=doc['facts'])])])],
                 question=None, reason=None)
 
 
@@ -60,7 +60,7 @@ def test_real_bone_quote_cannot_prove_handle_claim_automatically():
 @pytest.mark.parametrize('mutation', ['unknown_id', 'invented_quote', 'wrong_field', 'extra_field', 'missing_citation'])
 def test_fabricated_or_inconsistent_proposals_are_rejected(mutation):
     value = proposal()
-    reference = value['claims'][0]['evidence'][0]
+    reference = value['needs'][0]['claims'][0]['evidence'][0]
     if mutation == 'unknown_id':
         reference['knowledge_id'] = 'K99'
     elif mutation == 'invented_quote':
@@ -70,7 +70,7 @@ def test_fabricated_or_inconsistent_proposals_are_rejected(mutation):
     elif mutation == 'extra_field':
         value['approved_refund'] = True
     else:
-        value['claims'][0]['evidence'] = []
+        value['needs'][0]['claims'][0]['evidence'] = []
     assert check(value)['status'] == 'rejected'
 
 
@@ -97,21 +97,21 @@ def test_late_reply_is_discarded_after_context_changes(changes):
 
 
 def test_two_clarification_rounds_block_another_question():
-    value = dict(action='clarify', needs=[dict(subject='商品', attribute='型号',
-                status='missing_user', claim_indexes=[])], claims=[], question='你买的是哪种开合方式？', reason=None)
+    value = dict(schema_version=2, action='clarify', needs=[dict(subject='商品', attribute='型号',
+                status='missing_user', claims=[])], question='你买的是哪种开合方式？', reason=None)
     c = context(clarification_rounds=2)
     result = check_proposal(json.dumps(value), hits('K02'), c, c)
     assert result['status'] == 'rejected'
 
 
-def test_partial_answer_requires_a_gap_action_and_valid_claim_links():
+def test_partial_answer_requires_a_gap_action_and_evidence():
     value = proposal()
-    value['needs'].append(dict(subject='售后申请', attribute='换货审批', status='human_decision', claim_indexes=[]))
+    value['needs'].append(dict(subject='售后申请', attribute='换货审批', status='human_decision', claims=[]))
     assert check(value)['status'] == 'rejected'
     value['action'] = 'handoff'
     value['reason'] = '换货需要商家处理。'
     assert check(value)['status'] == 'citation_checked_pending_review'
-    value['needs'][0]['claim_indexes'] = [8]
+    value['needs'][0]['claims'][0]['evidence'] = []
     assert check(value)['status'] == 'rejected'
 
 
@@ -119,6 +119,47 @@ def test_missing_upf_report_can_be_an_answer_without_forced_handoff():
     result = check(proposal('K06', '目前没有可提供的防晒检测报告，无法确认具体指标。', '防晒报告', '可提供情况'))
     assert result['proposal']['action'] == 'answer'
     assert result['status'] == 'citation_checked_pending_review'
+
+
+def test_handoff_can_include_cited_known_parts_without_resolving_application():
+    value = proposal()
+    value['action'], value['reason'] = 'handoff', '申请需要商家处理。'
+    value['needs'][0]['status'] = 'human_decision'
+    assert check(value)['status'] == 'citation_checked_pending_review'
+    value['action'] = 'answer'
+    assert check(value)['status'] == 'rejected'
+
+
+@pytest.mark.parametrize('status', ['human_decision', 'requires_realtime'])
+def test_unresolved_human_or_realtime_needs_cannot_use_another_action(status):
+    value = dict(schema_version=2, action='insufficient', question=None, reason='暂时无法确认。',
+                 needs=[dict(subject='申请', attribute='结果', status=status, claims=[]),
+                        dict(subject='资料', attribute='参数', status='missing_knowledge', claims=[])])
+    assert check(value)['status'] == 'rejected'
+
+
+def test_each_nested_claim_still_needs_an_exact_retrieved_quote():
+    import copy
+    value = proposal()
+    value['needs'][0]['claims'].append(copy.deepcopy(value['needs'][0]['claims'][0]))
+    value['needs'][0]['claims'][1]['evidence'][0]['quote'] = '能抵抗十二级风'
+    assert check(value)['status'] == 'rejected'
+
+
+@pytest.mark.parametrize('mutation', ['missing_version', 'old_version', 'old_index', 'top_claims', 'empty_supported'])
+def test_v2_rejects_old_or_incomplete_shapes(mutation):
+    value = proposal()
+    if mutation == 'missing_version':
+        value.pop('schema_version')
+    elif mutation == 'old_version':
+        value['schema_version'] = 1
+    elif mutation == 'old_index':
+        value['needs'][0]['claim_indexes'] = [0]
+    elif mutation == 'top_claims':
+        value['claims'] = []
+    else:
+        value['needs'][0]['claims'] = []
+    assert check(value)['status'] == 'rejected'
 
 
 def test_generation_request_separates_public_data_from_rules_and_drops_internal_fields():
