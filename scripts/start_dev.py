@@ -13,7 +13,10 @@ from sqlalchemy import create_engine, text
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--test-db', action='store_true', help='仅浏览器验收使用独立umbrella_test库')
+parser.add_argument('--test-ai', action='store_true', help='配合--test-db使用明确标记的模拟AI，绝不调用官方模型')
 args = parser.parse_args()
+if args.test_ai and not args.test_db:
+    parser.error('--test-ai只能与--test-db一起使用')
 api_port, web_port = (8001, 5174) if args.test_db else (8000, 5173)
 prefix = 'test-' if args.test_db else ''
 python = root / '.venv/Scripts/python.exe'
@@ -42,6 +45,7 @@ env = dict(os.environ, PYTHONUTF8='1')
 if args.test_db:
     env['DB_NAME'] = 'umbrella_test'
     env['APP_ORIGIN'] = f'http://localhost:{web_port}'
+    env['AI_WEB_MODE'] = 'mock' if args.test_ai else 'disabled'
 env['API_TARGET'] = f'http://127.0.0.1:{api_port}'
 services = [
     ('api', [str(python), '-m', 'uvicorn', 'app.main:app', '--app-dir', str(root / 'backend'), '--host', '127.0.0.1', '--port', str(api_port)]),

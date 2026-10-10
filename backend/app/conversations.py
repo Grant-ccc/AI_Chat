@@ -1,5 +1,5 @@
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
@@ -63,10 +63,17 @@ def add_message(db, c, role, content, client_id=None):
 
 
 def open_handoff(db, c, previous, reason, event):
-    db.add(Handoff(conversation_id=c.id, round=(previous.round + 1) if previous else 1,
-                   reason=reason, covered_sequence=c.sequence, read_sequence=0))
+    from .simple_ai import invalidate
+    invalidate(db, c)
+    h = Handoff(conversation_id=c.id, round=(previous.round + 1) if previous else 1,
+                reason=reason, covered_sequence=c.sequence, read_sequence=0)
+    db.add(h)
+    db.flush()
+    from .handoff_summary import enqueue_summary
+    enqueue_summary(db, c, h)
     c.status = 'waiting_human'
     add_message(db, c, 'system', event)
+    return h
 
 
 def message_data(m):
@@ -75,16 +82,19 @@ def message_data(m):
 
 
 def snapshot(db, c, merchant=False):
+    from .simple_ai import public_status
     result = {'id': c.id, 'status': c.status, 'revision': c.revision, 'sequence': c.sequence,
               'messages': [message_data(m) for m in db.scalars(select(Message).where(Message.conversation_id == c.id).order_by(Message.sequence))]}
+    result['ai'] = public_status(db, c)
     if merchant:
+        from .handoff_summary import summary_data
         h = latest_handoff(db, c)
         result['handoff'] = None if not h else {
             'id': h.id, 'round': h.round, 'reason': h.reason,
             'covered_sequence': h.covered_sequence,
             'created_at': h.created_at.isoformat() + 'Z',
             'ended_at': h.ended_at.isoformat() + 'Z' if h.ended_at else None,
-            'summary_status': 'not_connected',
+            **summary_data(db, h),
         }
     return result
 
@@ -106,7 +116,7 @@ def send_message(db, c, data, role):
     if existing:
         if existing.role != role or existing.content != data.content:
             raise HTTPException(409, '消息编号已用于其他内容，请重新发送。')
-        return
+        return False
     if role == 'merchant' and c.status != 'human_active':
         raise HTTPException(409, '当前会话未接手或已结束，不能回复。')
     if c.sequence >= 2000:
@@ -114,23 +124,42 @@ def send_message(db, c, data, role):
     if role == 'user' and c.status == 'ended':
         c.status = 'ai_ready'
     add_message(db, c, role, data.content, client_id)
+    return True
 
 
 @router.post('/visitor/messages')
-def visitor_send(data: Send, request: Request, db: Session = Depends(get_db)):
+def visitor_send(data: Send, request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from .simple_ai import enqueue, run
+    from .handoff_summary import explicit_human_request, run_summary
     c = public_conversation(request, db, lock=True)
-    send_message(db, c, data, 'user')
+    task_id, summary_id = None, None
+    if send_message(db, c, data, 'user'):
+        if c.status == 'ai_ready' and explicit_human_request(data.content):
+            h = open_handoff(db, c, latest_handoff(db, c, lock=True), '用户主动请求人工',
+                             '已申请人工接待，可以在这里继续补充文字。')
+            summary_id = h.id
+        else:
+            task_id = enqueue(db, c)
     db.commit()
+    if task_id:
+        background_tasks.add_task(run, task_id)
+    if summary_id:
+        background_tasks.add_task(run_summary, summary_id)
     return snapshot(db, c)
 
 
 @router.post('/visitor/handoff')
-def handoff(request: Request, db: Session = Depends(get_db)):
+def handoff(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from .handoff_summary import run_summary
     c = public_conversation(request, db, lock=True)
     previous = latest_handoff(db, c, lock=True)
+    summary_id = None
     if c.status not in ('waiting_human', 'human_active'):
-        open_handoff(db, c, previous, '用户主动请求人工', '已申请人工接待，可以在这里继续补充文字。')
+        h = open_handoff(db, c, previous, '用户主动请求人工', '已申请人工接待，可以在这里继续补充文字。')
+        summary_id = h.id
     db.commit()
+    if summary_id:
+        background_tasks.add_task(run_summary, summary_id)
     return snapshot(db, c)
 
 
