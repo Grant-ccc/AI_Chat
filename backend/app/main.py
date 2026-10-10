@@ -1,10 +1,21 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from .auth import router as auth_router
 from .conversations import router as conversation_router
 
-app = FastAPI(title='花窗伞人工接待', version='0.1.0')
+@asynccontextmanager
+async def lifespan(app):
+    from .init_db import ensure_schema
+    from .db import engine
+    from .simple_ai import recover
+    ensure_schema(engine)
+    recover()
+    yield
+
+
+app = FastAPI(title='花窗伞客服', version='0.2.0', lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(conversation_router)
 
@@ -25,4 +36,5 @@ async def database_failure(request, exc):
 
 @app.get('/api/health')
 def health():
-    return {'status': 'ok', 'stage': 'human-only'}
+    from . import config
+    return {'status': 'ok', 'stage': 'simple-ai' if config.AI_WEB_MODE != 'disabled' else 'human-only', 'ai_mode': config.AI_WEB_MODE}

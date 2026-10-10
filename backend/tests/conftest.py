@@ -15,7 +15,7 @@ from app.init_db import ensure_schema
 
 
 @pytest.fixture
-def database():
+def database(monkeypatch):
     name = os.getenv('TEST_DB_NAME', 'umbrella_test')
     if not name.endswith('_test') or name == engine.url.database:
         raise RuntimeError('只能使用独立且以_test结尾的MySQL测试库。')
@@ -25,6 +25,9 @@ def database():
         for table in reversed(Base.metadata.sorted_tables):
             conn.execute(table.delete())
     factory = sessionmaker(test_engine, expire_on_commit=False)
+    from app import config, simple_ai
+    monkeypatch.setattr(config, 'AI_WEB_MODE', 'disabled')
+    monkeypatch.setattr(simple_ai, 'SessionLocal', factory)
     with factory() as db:
         db.add(Merchant(username='merchant', password_hash=password_hash('integration-password')))
         db.commit()

@@ -1,5 +1,5 @@
-export type Message = { id: string; sequence: number; role: 'user' | 'merchant' | 'system'; content: string; created_at: string };
-export type Conversation = { id: string; status: 'ai_ready' | 'waiting_human' | 'human_active' | 'ended'; revision: number; sequence: number; messages: Message[]; handoff?: { id: string; round: number; reason: string; covered_sequence: number; created_at: string; ended_at: string | null; summary_status: string } };
+export type Message = { id: string; sequence: number; role: 'user' | 'merchant' | 'assistant' | 'system'; content: string; created_at: string };
+export type Conversation = { id: string; status: 'ai_ready' | 'waiting_human' | 'human_active' | 'ended'; revision: number; sequence: number; messages: Message[]; ai: { enabled: boolean; simulation_date: string; status: string }; handoff?: { id: string; round: number; reason: string; covered_sequence: number; created_at: string; ended_at: string | null; summary_status: string } };
 export type Row = { id: string; status: Conversation['status']; preview: string; unread: boolean; updated_at: string };
 export type Queue = { pending: Row[]; ended: Row[] };
 export class ApiError extends Error {

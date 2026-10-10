@@ -1,5 +1,5 @@
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
@@ -63,6 +63,8 @@ def add_message(db, c, role, content, client_id=None):
 
 
 def open_handoff(db, c, previous, reason, event):
+    from .simple_ai import invalidate
+    invalidate(db, c)
     db.add(Handoff(conversation_id=c.id, round=(previous.round + 1) if previous else 1,
                    reason=reason, covered_sequence=c.sequence, read_sequence=0))
     c.status = 'waiting_human'
@@ -75,8 +77,10 @@ def message_data(m):
 
 
 def snapshot(db, c, merchant=False):
+    from .simple_ai import public_status
     result = {'id': c.id, 'status': c.status, 'revision': c.revision, 'sequence': c.sequence,
               'messages': [message_data(m) for m in db.scalars(select(Message).where(Message.conversation_id == c.id).order_by(Message.sequence))]}
+    result['ai'] = public_status(db, c)
     if merchant:
         h = latest_handoff(db, c)
         result['handoff'] = None if not h else {
@@ -106,7 +110,7 @@ def send_message(db, c, data, role):
     if existing:
         if existing.role != role or existing.content != data.content:
             raise HTTPException(409, '消息编号已用于其他内容，请重新发送。')
-        return
+        return False
     if role == 'merchant' and c.status != 'human_active':
         raise HTTPException(409, '当前会话未接手或已结束，不能回复。')
     if c.sequence >= 2000:
@@ -114,13 +118,17 @@ def send_message(db, c, data, role):
     if role == 'user' and c.status == 'ended':
         c.status = 'ai_ready'
     add_message(db, c, role, data.content, client_id)
+    return True
 
 
 @router.post('/visitor/messages')
-def visitor_send(data: Send, request: Request, db: Session = Depends(get_db)):
+def visitor_send(data: Send, request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    from .simple_ai import enqueue, run
     c = public_conversation(request, db, lock=True)
-    send_message(db, c, data, 'user')
+    task_id = enqueue(db, c) if send_message(db, c, data, 'user') else None
     db.commit()
+    if task_id:
+        background_tasks.add_task(run, task_id)
     return snapshot(db, c)
 
 

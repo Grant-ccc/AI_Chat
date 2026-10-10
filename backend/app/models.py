@@ -60,6 +60,17 @@ class VisitorSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
 
 
+class AiReply(Base):
+    __tablename__ = 'simple_ai_replies'
+    __table_args__ = (UniqueConstraint('conversation_id', 'user_sequence'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey('conversations.id'), index=True)
+    user_sequence: Mapped[int] = mapped_column(Integer)
+    source_revision: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24), default='queued')
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class Merchant(Base):
     __tablename__ = 'merchant_accounts'
     username: Mapped[str] = mapped_column(String(80), primary_key=True)
