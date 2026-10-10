@@ -25,9 +25,10 @@ def database(monkeypatch):
         for table in reversed(Base.metadata.sorted_tables):
             conn.execute(table.delete())
     factory = sessionmaker(test_engine, expire_on_commit=False)
-    from app import config, simple_ai
+    from app import config, simple_ai, handoff_summary
     monkeypatch.setattr(config, 'AI_WEB_MODE', 'disabled')
     monkeypatch.setattr(simple_ai, 'SessionLocal', factory)
+    monkeypatch.setattr(handoff_summary, 'SessionLocal', factory)
     with factory() as db:
         db.add(Merchant(username='merchant', password_hash=password_hash('integration-password')))
         db.commit()

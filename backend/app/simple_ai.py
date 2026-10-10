@@ -1,4 +1,5 @@
-"""完整公开 prompt 与本轮对话生成自然回复；不自动转交，不使用检索。"""
+"""完整公开prompt生成自然回复，可选择一个转人工动作，不使用检索。"""
+from dataclasses import dataclass
 import json
 import re
 import sqlite3
@@ -9,6 +10,7 @@ from pathlib import Path
 import httpx
 from dotenv import dotenv_values
 from sqlalchemy import select, desc
+from pydantic import BaseModel, ConfigDict, Field
 from . import config
 from .db import SessionLocal
 from .models import AiReply, Message, now
@@ -22,6 +24,45 @@ CALL_LOCK = Lock()
 
 class LimitError(Exception):
     pass
+
+
+class TransferInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True, str_strip_whitespace=True)
+    reason: str = Field(min_length=1, max_length=200)
+    reply: str = Field(min_length=1, max_length=2000)
+
+
+@dataclass
+class TransferReply:
+    reply: str
+    reason: str
+
+
+TRANSFER_TOOL = {'type': 'function', 'function': {
+    'name': 'transfer_to_human',
+    'description': '用户主动要求人工、申请退款换货赔偿、责任判断、规则例外、需核实订单参数或两轮追问仍不清时转人工。一般规则、闲聊和UPF报告缺失不自动转交。',
+    'parameters': {'type': 'object', 'properties': {
+        'reason': {'type': 'string', 'description': '简短公开转交原因'},
+        'reply': {'type': 'string', 'description': '完整自然回复，先回答可确认部分并提醒材料；不声称已转交或已批准'}},
+        'required': ['reason', 'reply'], 'additionalProperties': False}}}
+
+
+def parse_reply(choice, request):
+    message = choice['message']
+    if message.get('tool_calls'):
+        calls = message['tool_calls']
+        if (choice['finish_reason'] != 'tool_calls' or not request.get('tools') or len(calls) != 1
+                or calls[0].get('type') != 'function'
+                or calls[0]['function']['name'] != 'transfer_to_human'):
+            raise ValueError('Unexpected tool action')
+        args = TransferInput.model_validate_json(calls[0]['function']['arguments'])
+        return TransferReply(args.reply, args.reason)
+    text = message.get('content')
+    if choice['finish_reason'] != 'stop' or not isinstance(text, str) or not text.strip() or len(text) > 6000:
+        raise ValueError('Incomplete or oversized reply')
+    if not request.get('response_format') and len(text) > 2000:
+        raise ValueError('Reply too long')
+    return text.strip()
 
 
 def system_prompt():
@@ -89,7 +130,7 @@ def round_messages(db, c):
 def ledger_call(request, task_id, key):
     path = ROOT / '.local/simple-web/ledger.sqlite3'
     path.parent.mkdir(parents=True, exist_ok=True)
-    allowance = (len(json.dumps(request['messages'], ensure_ascii=False).encode()) + 1024) * 2
+    allowance = (len(json.dumps(request, ensure_ascii=False).encode()) + 1024) * 2
     if allowance > 100_000:
         raise LimitError('Input too long')
     reserved = (allowance * 2 + MAX_OUTPUT * 8) / 1_000_000
@@ -110,15 +151,14 @@ def ledger_call(request, task_id, key):
             response.raise_for_status()
             data = response.json()
             choice, usage = data['choices'][0], data['usage']
-            text = choice['message']['content']
-            if (choice['finish_reason'] != 'stop' or not isinstance(text, str) or not text.strip()
-                    or len(text) > 2000 or usage['prompt_tokens'] > allowance
+            text = parse_reply(choice, request)
+            if (usage['prompt_tokens'] > allowance
                     or usage['completion_tokens'] > MAX_OUTPUT):
                 raise ValueError('Incomplete or oversized reply')
             ledger.execute("UPDATE calls SET status='complete',input_tokens=?,output_tokens=? WHERE id=?",
                            (usage['prompt_tokens'], usage['completion_tokens'], task_id))
             ledger.commit()
-            return text.strip()
+            return text
         except Exception:
             ledger.execute("UPDATE calls SET status='failed_or_unknown' WHERE id=?", (task_id,))
             ledger.commit()
@@ -127,7 +167,13 @@ def ledger_call(request, task_id, key):
 
 def generate(messages, task_id):
     if config.AI_WEB_MODE == 'mock':
+        if any(word in messages[-1]['content'] for word in ('想换一把', '给我换一把', '申请退款')):
+            return TransferReply('【模拟 AI 回复】该售后申请需要商家判断；请准备订单截图与瑕疵照片，缺材料也可以先转交。', '售后申请需要商家判断')
         return '【模拟 AI 回复】已收到你的问题；这条回复仅用于验证网页流程，需要人工时请点击“转人工”。'
+    return call_model(system_prompt(), messages, task_id, tools=[TRANSFER_TOOL])
+
+
+def call_model(system, messages, task_id, **options):
     if config.AI_WEB_MODE != 'deepseek':
         raise ValueError('AI disabled')
     today = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
@@ -138,7 +184,7 @@ def generate(messages, task_id):
         raise ValueError('Missing local key')
     request = {'model': MODEL, 'thinking': {'type': 'disabled'}, 'stream': False,
                'temperature': 0.2, 'max_tokens': MAX_OUTPUT,
-               'messages': [{'role': 'system', 'content': system_prompt()}, *messages]}
+               'messages': [{'role': 'system', 'content': system}, *messages], **options}
     return ledger_call(request, task_id, key)
 
 
@@ -180,6 +226,7 @@ def run(task_id):
     except Exception:
         # No provider body, credentials or internal prompt in user errors/logs.
         status, content = 'failed', None
+    summary_id = None
     with SessionLocal() as db:
         task = db.get(AiReply, task_id)
         if not task:
@@ -196,10 +243,19 @@ def run(task_id):
                 if c.sequence >= 2000:
                     task.status = 'limited'
                 else:
-                    add_message(db, c, 'assistant', content)
+                    transfer = content if isinstance(content, TransferReply) else None
+                    add_message(db, c, 'assistant', transfer.reply if transfer else content)
+                    if transfer:
+                        from .conversations import open_handoff, latest_handoff
+                        h = open_handoff(db, c, latest_handoff(db, c, lock=True), transfer.reason,
+                                         '已转人工：' + transfer.reason + '。可以在这里继续补充文字。')
+                        summary_id = h.id
             c.revision += 1
             c.updated_at = now()
         db.commit()
+    if summary_id:
+        from .handoff_summary import run_summary
+        run_summary(summary_id)
 
 
 def recover():
@@ -215,3 +271,5 @@ def recover():
                 task.status = 'failed'
                 c.revision += 1
                 db.commit()
+    from .handoff_summary import recover_summaries
+    recover_summaries()
