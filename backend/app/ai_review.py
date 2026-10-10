@@ -2,7 +2,6 @@
 import json
 from functools import lru_cache
 from pathlib import Path
-from threading import Lock
 from sqlalchemy import select, desc
 from . import config
 from .db import SessionLocal
@@ -11,7 +10,6 @@ from .answer_contract import GenerationContext, build_deepseek_request, check_pr
 
 ROOT = Path(__file__).resolve().parents[2]
 ACTIVE = ('queued', 'generating', 'ready', 'failed', 'invalid', 'rejected')
-retrieval_lock = Lock()
 
 
 def current_review(db, c):
@@ -69,19 +67,17 @@ def context(db, c):
 
 
 @lru_cache(maxsize=1)
-def retriever():
-    from .retrieval import load_documents, KeywordRetriever, SemanticRetriever, HybridRetriever
+def public_documents():
+    from .retrieval import load_documents
     _, docs = load_documents(ROOT / 'knowledge/public.json')
-    return HybridRetriever(KeywordRetriever(docs), SemanticRetriever(docs,
-        ROOT / '.local/embedding-models', local_only=True))
+    return docs
 
 
 def retrieve(question, history, started):
-    # Preserve current-round conditions. Do not adopt experimental segmentation/reranking.
-    query = '\n'.join(item['content'] for item in history[-4:]) + '\n' + question
-    with retrieval_lock:
-        hits = retriever().search(query, top_k=3)['hits']
-    return [hit for hit in hits if hit['round'] == started.business_round]
+    # Small MVP corpus: provide all applicable public facts instead of losing short questions
+    # in top-k ranking. History stays separate in the generation request. Input/budget guards
+    # still reject oversized requests; never silently truncate facts to make them fit.
+    return [doc for doc in public_documents() if doc['round'] == started.business_round]
 
 
 def generate(draft_id, mode, started, question, history, hits):
