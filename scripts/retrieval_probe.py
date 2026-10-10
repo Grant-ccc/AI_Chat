@@ -104,6 +104,8 @@ def main():
     parser.add_argument('--evaluate', action='store_true')
     parser.add_argument('--method', choices=['keyword', 'semantic', 'hybrid', 'both', 'all'], default='both')
     parser.add_argument('--knowledge', type=Path, default=ROOT / 'knowledge/public.json')
+    parser.add_argument('--index-text', choices=['facts', 'facts-boundaries'], default='facts',
+                        help='对照事实文本与包含已有回答边界的文本，不改变业务事实')
     parser.add_argument('--model', default=DEFAULT_MODEL)
     parser.add_argument('--top-k', type=int, default=3)
     parser.add_argument('--local-only', action='store_true', help='语义模型仅从已有缓存加载，不下载')
@@ -125,11 +127,12 @@ def main():
         parser.error('开发集使用各题自带上下文，不接受全局 --context')
     if args.diagnose_gaps and not args.evaluate:
         parser.error('--diagnose-gaps 需与 --evaluate 一起使用')
-    data, documents = load_documents(args.knowledge)
+    data, documents = load_documents(args.knowledge, args.index_text)
     cases = build_cases() if args.evaluate else [dict(id='query', query='\n'.join(args.context + [args.query]), expected=[])]
     report = dict(created_at=datetime.now(timezone.utc).isoformat(),
                   knowledge_sha256=hashlib.sha256(args.knowledge.read_bytes()).hexdigest(),
                   source_sha256=data['source_sha256'], document_count=len(documents),
+                  index_text=args.index_text,
                   simulation_date=data['default_simulation_date'],
                   model=args.model if args.method != 'keyword' else None,
                   embedding_versions={name: version(name) for name in ['fastembed', 'onnxruntime', 'numpy']}

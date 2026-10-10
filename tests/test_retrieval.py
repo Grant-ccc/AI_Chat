@@ -131,3 +131,14 @@ def test_gap_diagnostics_are_separate_from_main_recall_evaluation():
     assert len(gaps) == 6
     assert not main_ids & {case['id'] for case in gaps}
     assert all(case['limitation'] for case in gaps)
+
+
+def test_boundary_index_preserves_facts_and_does_not_turn_constraints_into_facts():
+    _, baseline = load_documents(ROOT / 'knowledge/public.json')
+    _, candidate = load_documents(ROOT / 'knowledge/public.json', 'facts-boundaries')
+    for before, after in zip(baseline, candidate):
+        assert before['facts'] == after['facts']
+        assert before['boundaries'] == after['boundaries']
+        assert after['search_text'] == before['search_text'] + '。回答边界：' + before['boundaries']
+    with pytest.raises(ValueError, match='索引文本'):
+        load_documents(ROOT / 'knowledge/public.json', 'unknown')

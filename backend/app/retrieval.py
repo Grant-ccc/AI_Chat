@@ -9,7 +9,9 @@ from time import perf_counter
 DEFAULT_MODEL = 'BAAI/bge-small-zh-v1.5'
 
 
-def load_documents(path):
+def load_documents(path, index_text='facts'):
+    if index_text not in ['facts', 'facts-boundaries']:
+        raise ValueError('未知的索引文本方案')
     data = json.loads(Path(path).read_text(encoding='utf-8'))
     if data.get('schema_version') != 1:
         raise ValueError('不支持的知识文件版本')
@@ -18,8 +20,10 @@ def load_documents(path):
         if entry.get('visibility') != 'public':
             raise ValueError('用户检索数据只能包含公开知识')
         refs = {ref: data['sources'][ref] for ref in entry['source_ids']}
-        docs.append({**entry, 'sources': refs,
-                     'search_text': f"{entry['topic']}。{entry['facts']}"})
+        search_text = f"{entry['topic']}。{entry['facts']}"
+        if index_text == 'facts-boundaries':
+            search_text += f"。回答边界：{entry['boundaries']}"
+        docs.append({**entry, 'sources': refs, 'search_text': search_text})
     ids = [doc['id'] for doc in docs]
     if not docs or len(ids) != len(set(ids)):
         raise ValueError('知识条目为空或编号重复')
