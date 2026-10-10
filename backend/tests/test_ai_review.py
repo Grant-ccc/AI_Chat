@@ -60,6 +60,7 @@ def test_review_private_edit_and_concurrent_idempotency(review_db, monkeypatch):
     assert public['messages'][-1]['content'] == '已核对，这是商家确认的回复。'
     assert decide(m, cid, draft, content='改掉已发送内容').status_code == 409
     assert m.get('/api/merchant/conversations').json()['reviews'] == []
+    assert m.get('/api/merchant/conversations').json()['ended'][0]['review_status'] == 'approved'
     with review_db() as db:
         assert db.scalar(select(func.count()).select_from(AiReview)) == 1
         assert db.get(AiReview, draft['id']).reviewed_by == 'merchant'
@@ -172,3 +173,29 @@ def test_restart_fails_interrupted_job_without_retry(review_db, monkeypatch):
     draft = draft_for(merchant(), cid)
     assert draft['status'] == 'failed' and '重启' in draft['note']
     assert decide(merchant(), cid, draft, 'handoff').status_code == 200
+
+
+def test_cited_proposal_only_available_to_authenticated_reviewer(review_db, monkeypatch):
+    from app.retrieval import load_documents
+    _, docs = load_documents(ai_review.ROOT / 'knowledge/public.json')
+    doc = next(item for item in docs if item['id'] == 'K11')
+    monkeypatch.setattr(config, 'AI_REVIEW_MODE', 'deepseek')
+    monkeypatch.setattr(ai_review, 'retrieve', lambda *args: [doc | {'score': 99, 'components': {'internal': 1}}])
+    proposal = {'schema_version': 2, 'action': 'answer', 'needs': [{
+        'subject': '二团商品', 'attribute': '价格', 'status': 'supported', 'claims': [{
+        'kind': 'fact', 'subject': '二团商品', 'attribute': '价格', 'text': doc['facts'],
+        'evidence': [{'knowledge_id': 'K11', 'field': 'facts', 'quote': doc['facts']}]}]}],
+        'question': None, 'reason': None}
+    monkeypatch.setattr(ai_review, 'generate', lambda *args: {
+        'status': 'complete', 'finish_reason': 'stop', 'content': json.dumps(proposal)})
+    v, cid = visitor()
+    m = merchant()
+    v.post('/api/visitor/messages', json=payload('二团价格'))
+    draft = draft_for(m, cid)
+    assert draft['status'] == 'ready' and draft['candidate'] == doc['facts']
+    assert draft['evidence'][0]['sources'] == doc['sources']
+    assert 'score' not in draft['evidence'][0] and 'components' not in draft['evidence'][0]
+    public = v.get('/api/visitor/conversation').json()
+    assert len(public['messages']) == 1 and 'evidence' not in json.dumps(public)
+    assert decide(m, cid, draft, content=doc['facts']).status_code == 200
+    assert v.get('/api/visitor/conversation').json()['messages'][-1]['content'] == doc['facts']

@@ -170,6 +170,9 @@ def merchant_list(request: Request, db: Session = Depends(get_db)):
         if c.status == 'ai_ready' and draft and draft.status in ai_review.ACTIVE:
             row['review_status'] = draft.status
             reviews.append(row)
+        elif c.status == 'ai_ready' and draft and draft.status == 'approved':
+            row['review_status'] = 'approved'
+            ended.append(row)
         elif h:
             (ended if h.ended_at else pending).append(row)
     return {'pending': pending, 'ended': ended, 'reviews': reviews}

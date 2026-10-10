@@ -39,6 +39,8 @@ with sync_playwright() as p:
             session.update(response.json())
     user.on('response', session_response)
     try:
+        mode = user.request.get(base + '/api/health').json().get('ai_mode', 'disabled')
+        assert mode in ('disabled', 'mock'), 'Browser regression must not call paid models'
         user.goto(base)
         user.wait_for_load_state('networkidle')
         expect(user.get_by_role('button', name='转人工', exact=True)).to_be_enabled()
@@ -59,6 +61,7 @@ with sync_playwright() as p:
         staff.wait_for_load_state('networkidle')
         staff.get_by_label('密码', exact=True).fill('integration-password')
         staff.get_by_role('button', name='进入工作台').click()
+        staff.get_by_role('button', name='待处理', exact=False).click()
         row = staff.locator('.queue-item').filter(has_text=label)
         expect(row).to_be_visible(timeout=12000)
         expect(row.locator('.unread')).to_be_visible()
@@ -95,8 +98,10 @@ with sync_playwright() as p:
         staff.get_by_role('button', name='已结束', exact=False).click()
         expect(staff.locator('.queue-item').filter(has_text=label)).to_be_visible(timeout=12000)
         send(user, label + '：还有一个问题')
-        expect(user.locator('.status')).to_have_text('可留言')
+        expect(user.locator('.status')).to_have_text('普通咨询')
         expect(user.get_by_role('button', name='转人工', exact=True)).to_be_enabled()
+        if mode == 'mock':
+            staff.get_by_role('button', name='AI 审核', exact=False).click()
         expect(staff.locator('.queue-item').filter(has_text='还有一个问题')).to_be_visible(timeout=12000)
         staff.get_by_role('button', name='待处理', exact=False).click()
         expect(staff.locator('.queue-item').filter(has_text='还有一个问题')).to_have_count(0)
