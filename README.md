@@ -121,6 +121,36 @@ G题只用于诊断，未混入18道开发题的召回指标，不是独立保�
 
 复核顺序是：用户问什么对象和属性 → 哪句事实支持结论 → 限制条件是否匹配 → 缺少的是用户条件、知识事实、实时数据还是人工决定 → 根据业务规则选择回答/追问/说明缺口/转人工。所有逐题结论初始标记为待人工复核，没有实现自动事实支持检查；检测报告资料缺失仍按已确认规则直接说明，不自动转人工。下一步先确认这套回答检查流程，再设计生成与校验接口，避免继续仅靠召回数字判断能否回答。
 
+## 模型输出协议与引用检查（离线，2026-10-10）
+
+已新增 `backend/app/answer_contract.py`，准备DeepSeek对话补全的JSON请求体并检查候选输出，**没有发送请求或接入聊天页面**。DeepSeek [JSON Output官方说明](https://api-docs.deepseek.com/guides/json_mode/)要求`response_format={"type":"json_object"}`、提示包含json和输出示例，并提醒可能为空或截断。本项目不假定JSON模式会强制符合我们的Schema，另用Pydantic拒绝未知字段、错误类型、非法动作和不一致的结构。模型ID由调用者明确提供，不默认沿用学校模型名称。
+
+| 模型输出字段 | 用途 |
+|---|---|
+| action | answer回答、clarify追问、handoff交人工、insufficient说明资料缺口、out_of_scope无关问题 |
+| needs | 用户需要确认的对象/属性；标记有依据、缺用户条件、缺知识、需实时数据、需人工决定或无关 |
+| claims | 具体候选声明，区分肯定事实与限制说明，并关联用户诉求 |
+| evidence | 每个声明的知识编号、facts/boundaries字段与逐字引用 |
+| question / reason | 追问内容或无法直接回答的原因；仍须复核，不能用来绕过事实检查 |
+
+R01—R10单独导出为`knowledge/answer-policy.json`，作为生成约束，不进入检索索引。M01—M05、测试答案、摘要不提供给模型。请求构造器只选择候选的事实、边界和来源，不发送匹配分数或额外商家字段；历史参数只接受公开消息角色和文本。资料与用户文本被放入数据消息，不能作为新的系统规则。提示分离是约束设计，尚未证明真实模型能抵御所有指令干扰。
+
+状态检查在生成前区分可生成、保持静默、主动人工请求直接处理；检查候选时还核对会话状态、revision与latest_user_sequence，变化则丢弃。只索引本轮公开候选，引用其他编号、编造原文、把肯定事实仅挂到限制字段、继续第三轮追问或有未解决诉求却标记完整回答都会拒绝。日期来自模拟配置，不使用电脑当天日期。这里仅检查传入的状态快照，尚未与真实数据库事务/异步请求接合，不能视为F07已验收。
+
+**引用可追溯仍不代表原文支持具体结论。**真实伞骨引用可以被错误关联到伞柄；用户诉求是否完整、对象属性是否一致、业务动作是否正确都还需要事实支持复核。所有结果固定`deliverable=false`；合法引用返回`citation_checked_pending_review`，`semantic_support=unverified`，不能发送给用户。`insufficient`也不是“一律转人工”的替代规则，防晒报告缺失仍按R05直接说明。混合诉求可保留已支持部分并提议人工处理，但此模块不会创建实际交接。
+
+```powershell
+# 业务回答规则单独导出及一致性检查。
+.venv\Scripts\python.exe -X utf8 scripts/export_answer_policy.py
+.venv\Scripts\python.exe -X utf8 scripts/export_answer_policy.py --check
+# 七个手工构造场景的可阅读演示，无Key、无网络、无数据库。
+.venv\Scripts\python.exe -X utf8 scripts/answer_contract_probe.py
+# 可选：只准备请求体。把模型ID替换为官方平台确认值；本命令也不发送。
+.venv\Scripts\python.exe -X utf8 scripts/answer_contract_probe.py --prepare-query "防晒伞下雨能用吗？" --model "官方模型ID"
+```
+
+逐次JSON、演示Markdown和请求体位于忽略目录`.local/answer-contract`。准备请求示例使用字面检索，不表示已经选定最终检索方案。默认演示含真实引用、伪造原文、未知编号、错误部件推断、防晒资料缺失、已转人工的旧输出和截断七个场景；均为手工构造样例，不是真实模型表现。24项新增离线测试加上15项检索测试共39项通过；原人工客服代码未改动。下一步确认官方模型配置与少量真实调用范围，再对生成内容进行事实与动作复核；本步没有自动事实支持判定器、付费调用或公网部署。
+
 ## 项目文档
 
 | 文档 | 内容 |
