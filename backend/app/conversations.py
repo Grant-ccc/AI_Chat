@@ -1,11 +1,13 @@
+import json
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, or_
 from sqlalchemy.orm import Session
 from .db import get_db
-from .models import Conversation, Message, Handoff, now
+from .models import Conversation, Message, Handoff, AiReview, now
 from .security import session_auth
+from . import ai_review, config
 
 router = APIRouter(prefix='/api')
 
@@ -32,6 +34,12 @@ class Read(BaseModel):
 class Action(BaseModel):
     model_config = ConfigDict(extra='forbid')
     handoff_id: UUID
+
+
+class ReviewDecision(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    content: str | None = Field(default=None, max_length=2000)
+    confirmed: bool = False
 
 
 def conversation(db, conversation_id, lock=False):
@@ -77,7 +85,12 @@ def message_data(m):
 def snapshot(db, c, merchant=False):
     result = {'id': c.id, 'status': c.status, 'revision': c.revision, 'sequence': c.sequence,
               'messages': [message_data(m) for m in db.scalars(select(Message).where(Message.conversation_id == c.id).order_by(Message.sequence))]}
+    draft = ai_review.current_review(db, c)
+    result['ai'] = {'mode': config.AI_REVIEW_MODE,
+                    'simulation_date': config.AI_SIMULATION_DATE,
+                    'phase': draft.status if draft and c.status == 'ai_ready' else 'idle'}
     if merchant:
+        result['review'] = ai_review.review_data(draft) if draft else None
         h = latest_handoff(db, c)
         result['handoff'] = None if not h else {
             'id': h.id, 'round': h.round, 'reason': h.reason,
@@ -113,14 +126,17 @@ def send_message(db, c, data, role):
         raise HTTPException(409, '演示会话已达到消息上限，请联系项目负责人。')
     if role == 'user' and c.status == 'ended':
         c.status = 'ai_ready'
-    add_message(db, c, role, data.content, client_id)
+    return add_message(db, c, role, data.content, client_id)
 
 
 @router.post('/visitor/messages')
-def visitor_send(data: Send, request: Request, db: Session = Depends(get_db)):
+def visitor_send(data: Send, request: Request, tasks: BackgroundTasks, db: Session = Depends(get_db)):
     c = public_conversation(request, db, lock=True)
-    send_message(db, c, data, 'user')
+    message = send_message(db, c, data, 'user')
+    job = ai_review.enqueue(db, c) if message else None
     db.commit()
+    if job:
+        tasks.add_task(ai_review.run_review, job)
     return snapshot(db, c)
 
 
@@ -129,6 +145,7 @@ def handoff(request: Request, db: Session = Depends(get_db)):
     c = public_conversation(request, db, lock=True)
     previous = latest_handoff(db, c, lock=True)
     if c.status not in ('waiting_human', 'human_active'):
+        ai_review.invalidate_reviews(db, c)
         open_handoff(db, c, previous, '用户主动请求人工', '已申请人工接待，可以在这里继续补充文字。')
     db.commit()
     return snapshot(db, c)
@@ -137,27 +154,79 @@ def handoff(request: Request, db: Session = Depends(get_db)):
 @router.get('/merchant/conversations')
 def merchant_list(request: Request, db: Session = Depends(get_db)):
     session_auth(request, db, merchant=True)
-    pending, ended = [], []
+    pending, ended, reviews = [], [], []
     conversations = db.scalars(select(Conversation).where(
-        select(Handoff.id).where(Handoff.conversation_id == Conversation.id).exists()
+        or_(select(Handoff.id).where(Handoff.conversation_id == Conversation.id).exists(),
+            select(AiReview.id).where(AiReview.conversation_id == Conversation.id).exists())
     ).order_by(desc(Conversation.updated_at)).limit(200))
     for c in conversations:
         h = latest_handoff(db, c)
+        draft = ai_review.current_review(db, c)
         last = db.scalar(select(Message).where(Message.conversation_id == c.id,
             Message.role != 'system').order_by(desc(Message.sequence)).limit(1))
         row = {'id': c.id, 'status': c.status, 'preview': last.content[:60] if last else '尚未描述问题',
-               'unread': not h.viewed or c.latest_user_sequence > h.read_sequence,
+               'unread': bool(h and (not h.viewed or c.latest_user_sequence > h.read_sequence)),
                'updated_at': c.updated_at.isoformat() + 'Z'}
-        (ended if h.ended_at else pending).append(row)
-    return {'pending': pending, 'ended': ended}
+        if c.status == 'ai_ready' and draft and draft.status in ai_review.ACTIVE:
+            row['review_status'] = draft.status
+            reviews.append(row)
+        elif h:
+            (ended if h.ended_at else pending).append(row)
+    return {'pending': pending, 'ended': ended, 'reviews': reviews}
 
 
 @router.get('/merchant/conversations/{conversation_id}')
 def merchant_get(conversation_id: str, request: Request, db: Session = Depends(get_db)):
     session_auth(request, db, merchant=True)
     c = conversation(db, conversation_id)
-    if not latest_handoff(db, c):
+    if not latest_handoff(db, c) and not ai_review.current_review(db, c):
         raise HTTPException(404, '该会话尚未转交。')
+    return snapshot(db, c, merchant=True)
+
+
+@router.post('/merchant/conversations/{conversation_id}/reviews/{review_id}/{decision}')
+def decide_review(conversation_id: str, review_id: UUID, decision: str, data: ReviewDecision,
+                  request: Request, db: Session = Depends(get_db)):
+    identity = session_auth(request, db, merchant=True)
+    if decision not in ('approve', 'reject', 'handoff'):
+        raise HTTPException(404, '审核动作不存在。')
+    c = conversation(db, conversation_id, lock=True)
+    draft = db.scalar(select(AiReview).where(AiReview.id == str(review_id),
+        AiReview.conversation_id == c.id).with_for_update())
+    if not draft:
+        raise HTTPException(404, '审核候选不存在。')
+    content = (data.content or '').strip()
+    if decision == 'approve' and (not data.confirmed or not content):
+        raise HTTPException(422, '请检查依据、诉求与动作，确认后发送非空回复。')
+    if decision == 'approve' and draft.status == 'approved':
+        if draft.final_content != content:
+            raise HTTPException(409, '该候选已用其他内容发送，请刷新会话。')
+        return snapshot(db, c, merchant=True)
+    if (decision, draft.status) in [('reject', 'rejected'), ('handoff', 'handed_off')]:
+        return snapshot(db, c, merchant=True)
+    if c.status != 'ai_ready' or draft.user_sequence != c.latest_user_sequence or draft.source_revision != c.revision:
+        raise HTTPException(409, '用户消息或接待状态已更新，旧候选不能处理。')
+    if draft.status not in ai_review.ACTIVE:
+        raise HTTPException(409, '该候选已失效，请刷新会话。')
+    if decision == 'approve' and draft.status != 'ready':
+        raise HTTPException(409, '候选尚未通过检查，不能发送。')
+    if c.sequence >= 1999:
+        raise HTTPException(409, '演示会话已达到消息上限，请联系项目负责人。')
+    draft.reviewed_by, draft.reviewed_at = identity.username, now()
+    if decision == 'approve':
+        add_message(db, c, 'assistant', content)
+        draft.status, draft.final_content = 'approved', content
+        if json.loads(draft.proposal_json)['action'] == 'handoff':
+            open_handoff(db, c, latest_handoff(db, c, lock=True), '商家审核后转人工', '商家已将本次问题转交人工处理。')
+    elif decision == 'handoff':
+        ai_review.invalidate_reviews(db, c)
+        draft.status = 'handed_off'
+        open_handoff(db, c, latest_handoff(db, c, lock=True), '商家审核后转人工', '商家已将本次问题转交人工处理。')
+    else:
+        draft.status, draft.note = 'rejected', '商家未采用该候选，可转人工继续处理。'
+        ai_review.bump(c)
+        draft.source_revision = c.revision
+    db.commit()
     return snapshot(db, c, merchant=True)
 
 
@@ -212,6 +281,7 @@ def end(conversation_id: str, data: Action, request: Request, db: Session = Depe
         c.status = 'ended'
         h.ended_at = now()
         add_message(db, c, 'system', '商家已结束本次处理。历史记录保留，可继续留言或再次转人工。')
+        h.ended_sequence = c.sequence
     elif c.status != 'ended':
         raise HTTPException(409, '请先接手，再结束本次处理。')
     db.commit()
